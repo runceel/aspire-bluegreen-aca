@@ -1,0 +1,18 @@
+# .NET build output
+[Bb]in/
+[Oo]bj/
+*.user
+
+# Aspire / azd generated artifacts
+**/*.module.bicep
+**/manifest.json
+.azure/
+
+# Node / Vite
+node_modules/
+dist/
+npm-debug.log*
+
+# Local env / secrets
+*.env
+.DS_Store

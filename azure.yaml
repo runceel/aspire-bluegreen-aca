@@ -1,0 +1,35 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+
+name: aspire-bluegreen-aca
+metadata:
+  template: aspire-bluegreen-aca@1.0.0
+
+# Single Aspire AppHost service. azd reads the Aspire manifest and provisions the
+# Container Apps environment + the api/web container apps (manifest mode, GA).
+services:
+  app:
+    language: dotnet
+    project: ./AspireBlueGreen.AppHost/AspireBlueGreen.AppHost.csproj
+    host: containerapp
+
+# NOTE: there is intentionally NO preprovision hook. Platform resources (VNet,
+# SQL, Front Door) are deployed explicitly by scripts/up.ps1 / preview.ps1 so
+# that `azd provision --preview` stays side-effect free.
+hooks:
+  # Runs after `azd deploy` (and the deploy phase of `azd up`). It does NOT run
+  # during `azd provision --preview`, so previews never touch Front Door/traffic.
+  postdeploy:
+    windows:
+      shell: pwsh
+      continueOnError: false
+      interactive: false
+      run: |
+        ./scripts/configure-frontdoor-origin.ps1
+        ./scripts/reconcile-traffic.ps1
+    posix:
+      shell: pwsh
+      continueOnError: false
+      interactive: false
+      run: |
+        ./scripts/configure-frontdoor-origin.ps1
+        ./scripts/reconcile-traffic.ps1

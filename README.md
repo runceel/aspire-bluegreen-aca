@@ -1,0 +1,182 @@
+# Aspire blue/green on Azure Container Apps
+
+`.NET 10 + Aspire` で構築した、**Azure Container Apps (ACA) 上で blue/green デプロイ**を実演するためのサンプルです。
+`Aspireデプロイ戦略まとめ.md` の方針（外部リソースは AsExisting、アプリは `PublishAsAzureContainerApp`、差分は `azd provision --preview`）をそのまま実装しています。
+
+- フロントエンド: **React (Vite)** — 本番は nginx コンテナで配信し `/api` を API へリバースプロキシ
+- バックエンド: **ASP.NET Core (.NET 10)** — `/api/version`（SQL 非依存）/ `/api/orders`（SQL）
+- デプロイ: **azd**（manifest モード = GA。`azd infra gen`/`aspire deploy` などの非 GA 機能は不使用）
+- 外部リソース: **VNet / Azure SQL / Front Door**（`platform/` の Bicep で作成し、AppHost は外部参照）
+
+> **GA 機能のみ**: AppHost は `dotnet build` で実験的 API 診断（`ASPIRE*`）が 0 件になることを確認済みです。
+
+## アーキテクチャ
+
+```mermaid
+flowchart LR
+  user["ブラウザ"] --> afd["Front Door + WAF<br/>(platform/)"]
+  afd --> web["web (ACA)<br/>nginx + React<br/>blue/green"]
+  web -- "/api/* リバースプロキシ" --> api["api (ACA)<br/>ASP.NET Core<br/>blue/green"]
+  api --> sql[("Azure SQL<br/>orders DB")]
+  subgraph vnet["VNet (platform/)"]
+    subgraph acaenv["ACA 環境 (AppHost が VNet 統合)"]
+      web
+      api
+    end
+  end
+```
+
+- **同一オリジン化**: ブラウザからの `/api/*` は web(nginx) が API の ingress へリバースプロキシ。Front Door は web を単一 origin として前段に置くだけ（パス分岐なし）。
+- **blue/green**: web・api の両方を ACA の複数リビジョンモードにし、`blue`/`green` ラベルでトラフィックを切り替えます。promote / rollback は **web と api を一括**で行い、2 ティアを常に揃えます。
+
+## 戦略まとめとの対応
+
+| リソース | 戦略まとめの分類 | 本サンプルの実装 |
+| --- | --- | --- |
+| ACA 環境 | `AddAzureContainerAppEnvironment`（GA） | AppHost。`ConfigureInfrastructure` で platform の VNet サブネットに統合 |
+| フロント/バック | `PublishAsAzureContainerApp`（GA） | 複数リビジョンモード（Multiple） |
+| SQL Database | `AsExisting`（GA） | `RunAsContainer()`（ローカル）+ `PublishAsExisting()`（Azure）。実体は `platform/` |
+| VNet | 純インフラ + 付随設定 | `platform/`。ACA 環境を `ConfigureInfrastructure` でサブネット統合 |
+| Front Door | 純インフラ（別デプロイ） | `platform/` で profile/endpoint/WAF/origin-group（空）。origin は postdeploy フックで配線 |
+| 適用前差分 | `azd provision --preview`（GA） | `scripts/preview.ps1`（承認ゲート） |
+| blue/green | 複数リビジョン + トラフィック分割 + ラベル（GA） | `scripts/bluegreen-*.ps1`（`az containerapp` ラッパー） |
+
+## ディレクトリ構成
+
+```text
+AspireBlueGreen.AppHost/        Aspire AppHost（ACA 環境 + api/web + SQL + VNet 統合）
+AspireBlueGreen.ServiceDefaults/ Aspire ServiceDefaults
+src/Api/                        ASP.NET Core バックエンド
+src/web/                        React + Vite フロント（+ Dockerfile / nginx）
+platform/                       外部リソースの Bicep（VNet / SQL / Front Door / Key Vault）
+scripts/                        azd ラッパー + blue/green スクリプト
+azure.yaml                      azd 設定 + postdeploy フック
+docs/demo-guide.md              デモ手順書（スクリプト版 / 日本語）
+docs/demo-guide-manual.md       デモ手順書（手動実行版 / 日本語）
+LICENSE                         MIT License
+```
+
+## 前提ツール
+
+- .NET 10 SDK / Node.js 24+ / Docker（ローカル `aspire run` と publish 用）
+- Azure CLI (`az`) と Azure Developer CLI (`azd`)
+- PowerShell 7 (`pwsh`)
+- （任意）`sqlcmd`（go-sqlcmd）— `grant-sql-access.ps1` を手動実行する場合のみ
+
+## ローカル実行（Azure 不要）
+
+```powershell
+aspire run
+```
+
+- `aspire run`（run モード）では web は **Vite 開発サーバー**、SQL は **コンテナ**で起動します。
+- ブラウザでバナー色 + バージョンが表示され、`/api/version` が応答します。`/api/orders` は SQL コンテナを使用します。
+
+## Azure へデプロイ
+
+```powershell
+az login
+azd auth login
+azd env new prod                 # 環境を作成
+azd env set AZURE_LOCATION japaneast
+
+# 一式（platform → azd up → Front Door 配線 → トラフィック整備）
+./scripts/up.ps1
+```
+
+`up.ps1` は次を順に実行します。
+
+1. `deploy-platform.ps1 -Apply` … VNet / Azure SQL / Front Door（空 origin）を `az deployment group` で作成し、出力を `azd env set`
+2. `azd up` … manifest モードで ACA 環境 + api/web を provision → コンテナイメージを build/push → deploy
+3. **postdeploy フック**（`azure.yaml`）… `configure-frontdoor-origin.ps1`（Front Door origin/route = web FQDN）+ `reconcile-traffic.ps1`（`ACTIVE_LABEL=100% / candidate=0%`）
+
+完了後、`https://<Front Door エンドポイント>` で blue 版が表示されます。
+
+### 適用前の差分確認（承認ゲート）
+
+```powershell
+./scripts/preview.ps1
+```
+
+- `deploy-platform.ps1 -WhatIf`（platform 差分）+ `azd provision --preview`（ACA インフラ差分）を実行します。
+- preprovision フックを使わず、Front Door / トラフィック変更は postdeploy フックに限定しているため、**preview は実リソースを変更しません**。
+
+## blue/green デモの流れ
+
+1. コードを書き換えて新バージョンにする
+   - `src/Api/Program.cs` の `Color` / `Label` を変更（例: 緑 `#16a34a` / `green`）
+   - 新バージョン番号を設定: `azd env set appVersion 1.1.0`（api の `APP_VERSION` env と web のビルド引数へ反映）
+2. 新リビジョンをデプロイ（本番トラフィックは奪わない）
+   ```powershell
+   azd deploy
+   ```
+   postdeploy フックが新リビジョンを **candidate（このデモでは green）ラベル**に割り当て、`ACTIVE_LABEL=100% / candidate=0%` を維持します。
+3. candidate を検証（本番に影響なし）
+   ```powershell
+   ./scripts/bluegreen-status.ps1   # 各アプリの candidate ラベル URL を表示
+   ```
+   表示された `https://web---green...` / `https://api---green.../api/version` を個別に確認します。
+4. 本番へ切り替え（web/api 一括）
+   ```powershell
+   ./scripts/bluegreen-promote.ps1                    # 即時 100%
+   ./scripts/bluegreen-promote.ps1 -CandidateWeight 20 # 段階的（カナリア）も可
+   ```
+5. 問題があれば即時ロールバック
+   ```powershell
+   ./scripts/bluegreen-rollback.ps1
+   ```
+
+> `Color`/`Label` は API が `/api/version` で返し、web がバナー色とバージョン表示に使います。web/api は一括で promote するため、UI と API のバージョンが常に一致します。
+
+> **2 つのデモ手順書**: 確実かつ短時間でデモを実施するなら[`docs/demo-guide.md`（スクリプト版）](docs/demo-guide.md)。`azd` / `az` を 1 つずつ手動で実行し、スクリプトが内部で何をしているかを理解するなら[`docs/demo-guide-manual.md`（手動実行版）](docs/demo-guide-manual.md)。
+
+## スクリプト一覧
+
+| スクリプト | 役割 |
+| --- | --- |
+| `up.ps1` | E2E 一式（platform → `azd up` → status） |
+| `preview.ps1` | 差分ゲート（platform what-if + `azd provision --preview`、副作用なし） |
+| `deploy-platform.ps1` | platform の `-WhatIf`/`-Apply`。出力を `azd env set` |
+| `configure-frontdoor-origin.ps1` | postdeploy フック: Front Door の origin/route に web FQDN を設定 |
+| `reconcile-traffic.ps1` | postdeploy フック: `ACTIVE_LABEL=100% / candidate=0%` を保証 |
+| `bluegreen-status.ps1` | web/api のリビジョン・ラベル・トラフィック・ラベル URL を表示 |
+| `bluegreen-promote.ps1` | candidate を本番へ（`-CandidateWeight` でカナリア） |
+| `bluegreen-rollback.ps1` | 直前の本番ラベルへ即時ロールバック |
+| `grant-sql-access.ps1` | （任意）API のマネージド ID に SQL アクセスを付与 |
+
+## CI/CD 化の方法（パイプライン本体はスコープ外）
+
+すべての工程が `scripts/*.ps1` + `azd` で完結するため、同じコマンド列を CI から実行できます。
+
+```text
+# 例: パイプラインの 1 ジョブ
+azd auth login --client-id $AZURE_CLIENT_ID --federated-credential-provider github --tenant-id $AZURE_TENANT_ID   # OIDC
+azd env select prod                       # or azd env new + azd env set
+pwsh ./scripts/preview.ps1                 # 差分の承認ゲート（手動承認ステップを挟む）
+pwsh ./scripts/deploy-platform.ps1 -Apply  # platform 適用
+azd provision                              # ACA インフラ
+azd deploy                                 # アプリ（postdeploy フックが Front Door とトラフィック設定を整備）
+# 検証後に承認 →
+pwsh ./scripts/bluegreen-promote.ps1
+```
+
+- 認証はパスワードレス（OIDC フェデレーション）を想定。`azd env` の値（`AZURE_LOCATION` など）はパイプライン変数から設定。
+- YAML 本体（GitHub Actions / Azure Pipelines）は本リポジトリには含めません（スコープ外）。
+
+## 後片付け
+
+```powershell
+azd down --purge --force
+# platform リソースグループも削除
+az group delete -n rg-prod-platform --yes
+```
+
+## 補足
+
+- `/api/version` は SQL 非依存のため、SQL 未接続でもアプリは起動し blue/green デモが成立します。
+- SQL のパスワードレスアクセスは AppHost が生成する `api-roles-sql` モジュールで `azd provision` 時に付与されます（手動で行う場合は `grant-sql-access.ps1`）。
+- 本サンプルはデモ用に SQL の「Azure サービスからのアクセス許可」を有効化しています。本番ではプライベートエンドポイントの利用を推奨します。
+
+## ライセンス
+
+[MIT License](LICENSE) で公開しています。

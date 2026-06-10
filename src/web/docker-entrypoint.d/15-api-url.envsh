@@ -1,0 +1,14 @@
+#!/bin/sh
+# Sourced (.envsh) by the stock nginx entrypoint *before*
+# 20-envsubst-on-templates.sh so that the exported API_URL is visible when the
+# nginx config template is rendered.
+#
+# Aspire injects the backend address via WithReference(api) as
+# services__api__http__0 (or the https variant). nginx's proxy_pass keeps the
+# original request URI only when the upstream has no trailing path, so strip any
+# trailing slash.
+_api_url="${services__api__http__0:-${services__api__https__0:-}}"
+API_URL="${_api_url%/}"
+export API_URL
+
+echo "15-api-url.envsh: API_URL=${API_URL}"
