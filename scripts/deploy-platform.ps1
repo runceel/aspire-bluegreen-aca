@@ -2,7 +2,7 @@
 .SYNOPSIS
   Deploys (or previews) the external platform resources (VNet, Azure SQL, Key
   Vault, Front Door) and publishes their outputs into the selected azd
-  environment so the Aspire AppHost parameters resolve.
+  environment/config so the Aspire AppHost parameters resolve.
 
 .DESCRIPTION
   This is a standalone step deliberately kept OUT of azd's preprovision hook so
@@ -10,7 +10,7 @@
   from scripts/up.ps1 (-Apply) and scripts/preview.ps1 (-WhatIf).
 
 .PARAMETER Apply
-  Create/update the platform resources and push outputs to the azd env.
+  Create/update the platform resources and push outputs to the azd env/config.
 
 .PARAMETER WhatIf
   Show an ARM what-if diff only. (An empty platform resource group may be
@@ -103,15 +103,15 @@ if ($WhatIf) {
     return
 }
 
-Write-Section 'Publishing platform outputs to the azd environment'
+Write-Section 'Publishing platform outputs to the azd environment/config'
 $outputsJson = az deployment group show -g $PlatformResourceGroup -n $deploymentName `
     --query properties.outputs -o json
 $outputs = $outputsJson | ConvertFrom-Json
 
-# AppHost parameters (resolved by azd from matching env keys).
-Set-AzdEnv 'infrastructureSubnetId' $outputs.infrastructureSubnetId.value
-Set-AzdEnv 'sqlServerName'          $outputs.sqlServerName.value
-Set-AzdEnv 'sqlResourceGroup'       $outputs.sqlResourceGroup.value
+# AppHost publish inputs (resolved by azd from infra.parameters.*).
+Set-AzdInfraParameter 'infrastructureSubnetId' $outputs.infrastructureSubnetId.value
+Set-AzdInfraParameter 'sqlServerName'          $outputs.sqlServerName.value
+Set-AzdInfraParameter 'sqlResourceGroup'       $outputs.sqlResourceGroup.value
 
 # Consumed by the postdeploy Front Door hook.
 Set-AzdEnv 'PLATFORM_RESOURCE_GROUP'        $PlatformResourceGroup

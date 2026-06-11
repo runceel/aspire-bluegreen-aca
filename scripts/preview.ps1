@@ -9,8 +9,8 @@
   resource group so the group-scoped what-if can run, but no billable resources.
 
   azd provision --preview needs the AppHost parameters (subnet id, SQL server,
-  SQL resource group) to be resolvable. If platform has not been applied yet they
-  are unknown, so that step is skipped with a hint.
+  SQL resource group) to be resolvable via infra.parameters.*. If platform has
+  not been applied yet they are unknown, so that step is skipped with a hint.
 #>
 [CmdletBinding()]
 param(
@@ -36,9 +36,16 @@ if ($SqlAdminObjectId) { $ppArgs.SqlAdminObjectId = $SqlAdminObjectId }
 
 # ----- Step 2: azd provision --preview -----
 Write-Section 'Preview 2/2: azd provision --preview (Aspire infra)'
-$envValues = Get-AzdEnvValues
-if ([string]::IsNullOrWhiteSpace($envValues['infrastructureSubnetId'])) {
-    Write-Host 'Skipped: platform outputs not in azd env yet.' -ForegroundColor Yellow
+$missingInfraParameters = @(
+    foreach ($parameterName in @('infrastructureSubnetId', 'sqlServerName', 'sqlResourceGroup')) {
+        if ([string]::IsNullOrWhiteSpace((Get-AzdInfraParameter $parameterName))) {
+            $parameterName
+        }
+    }
+)
+
+if ($missingInfraParameters.Count -gt 0) {
+    Write-Host "Skipped: platform outputs not in azd env config yet ($($missingInfraParameters -join ', '))." -ForegroundColor Yellow
     Write-Host 'Run "./scripts/deploy-platform.ps1 -Apply" once, then preview shows the ACA infra diff.' -ForegroundColor Yellow
     return
 }

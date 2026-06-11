@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   End-to-end deploy of the whole sample with one command:
     1. platform (VNet / Azure SQL / Front Door) via deploy-platform.ps1 -Apply
@@ -11,7 +11,8 @@
   environment to be selected first:
       azd auth login ; az login
       azd env new prod        # or: azd env select prod
-      azd env set AZURE_LOCATION <region>   # if not already set
+      azd env set AZURE_LOCATION <region>
+      azd env set AZURE_SUBSCRIPTION_ID $(az account show --query id -o tsv)
 
 .EXAMPLE
   ./scripts/up.ps1

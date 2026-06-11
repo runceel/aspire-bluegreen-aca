@@ -30,6 +30,21 @@ function Get-AzdEnvValues {
     return $values
 }
 
+function Get-AzdConfigValue {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    $raw = azd env config get $Path 2>$null
+    if ($LASTEXITCODE -ne 0 -or $null -eq $raw) {
+        return ''
+    }
+
+    $value = ($raw -join [Environment]::NewLine).Trim()
+    if ($value.StartsWith('"') -and $value.EndsWith('"')) {
+        $value = $value.Substring(1, $value.Length - 2)
+    }
+    return $value
+}
+
 function Get-RequiredEnv {
     param(
         [Parameter(Mandatory)] [hashtable] $Env,
@@ -115,6 +130,21 @@ function Set-AzdEnv {
         [Parameter(Mandatory)] [string] $Value
     )
     azd env set $Name $Value 1>$null
+}
+
+function Get-AzdInfraParameter {
+    param([Parameter(Mandatory)] [string] $Name)
+
+    return Get-AzdConfigValue "infra.parameters.$Name"
+}
+
+function Set-AzdInfraParameter {
+    param(
+        [Parameter(Mandatory)] [string] $Name,
+        [Parameter(Mandatory)] [string] $Value
+    )
+
+    azd env config set "infra.parameters.$Name" $Value 1>$null
 }
 
 function Get-TargetApps {

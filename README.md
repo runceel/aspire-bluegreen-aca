@@ -13,21 +13,46 @@
 ## アーキテクチャ
 
 ```mermaid
-flowchart LR
-  user["ブラウザ"] --> afd["Front Door + WAF<br/>(platform/)"]
-  afd --> web["web (ACA)<br/>nginx + React<br/>blue/green"]
-  web -- "/api/* リバースプロキシ" --> api["api (ACA)<br/>ASP.NET Core<br/>blue/green"]
-  api --> sql[("Azure SQL<br/>orders DB")]
-  subgraph vnet["VNet (platform/)"]
-    subgraph acaenv["ACA 環境 (AppHost が VNet 統合)"]
-      web
-      api
+flowchart TB
+  user["ユーザー（ブラウザ）"]
+  afd["Azure Front Door Standard + WAF<br/>グローバル（platform）"]
+
+  subgraph vnet["仮想ネットワーク 10.10.0.0/16（platform）"]
+    subgraph subnet["サブネット aca-infra 10.10.0.0/23<br/>Microsoft.App/environments に委任"]
+      subgraph acaenv["Container Apps 環境（azd・VNet 統合 / IsInternal=false）"]
+        web["web コンテナアプリ<br/>nginx + React SPA<br/>blue/green リビジョン"]
+        api["api コンテナアプリ<br/>ASP.NET Core<br/>blue/green リビジョン"]
+      end
     end
   end
+
+  mi(["api マネージド ID（azd）"])
+  sql[("Azure SQL Database<br/>Entra 認証のみ<br/>public + AllowAzureServices（platform）")]
+  kv["Key Vault・RBAC（platform）"]
+  pe["Private Endpoint（SQL / Key Vault）<br/>本番推奨・本サンプルでは未デプロイ"]
+
+  user -->|"HTTPS"| afd
+  afd -->|"origin = web の ingress FQDN<br/>（postdeploy フックで配線）"| web
+  web -->|"/api をリバースプロキシ"| api
+  api -->|"パスワードレス（Entra MI）<br/>サブネットから public 経由で接続"| sql
+  api -.->|"利用"| mi
+  mi -.->|"SQL ロール割り当て<br/>（api-roles-sql モジュール）"| sql
+  api -.->|"シークレット参照（任意）"| kv
+  subnet -.->|"本番はプライベート化を推奨"| pe
+  pe -.-> sql
+  pe -.-> kv
+
+  classDef recommend stroke:#999,stroke-dasharray:5 5,color:#666,fill:#f6f6f6;
+  class pe recommend;
 ```
 
-- **同一オリジン化**: ブラウザからの `/api/*` は web(nginx) が API の ingress へリバースプロキシ。Front Door は web を単一 origin として前段に置くだけ（パス分岐なし）。
+- **VNet 統合**: ACA 環境のインフラを platform VNet の委任サブネット `aca-infra`（`Microsoft.App/environments` に委任）へ注入します（`ConfigureInfrastructure`）。`IsInternal=false` のため ingress は外部公開で、Front Door が web を単一 origin として前段に置きます。
+- **同一オリジン化**: ブラウザからの `/api/*` は web(nginx) が api の ingress へリバースプロキシ。Front Door はパス分岐なしで web のみを origin にします。api 自身も外部 ingress を持つため、green ラベル FQDN を直接検証できます。
+- **SQL アクセス（パスワードレス）**: api はマネージド ID（Entra）で SQL に接続します（`AddAzureSqlServer().PublishAsExisting()` + `WithReference` が生成する `api-roles-sql` ロール割り当て）。SQL は Entra 認証のみ・public エンドポイント + `AllowAllAzureServices` 許可で、ACA サブネットから接続します。
+- **Private Endpoint（本番推奨・未デプロイ）**: 本サンプルは簡略化のため SQL / Key Vault を public エンドポイントで利用します。本番では VNet 内に Private Endpoint を置き、`publicNetworkAccess` を無効化することを推奨します（図の点線）。
 - **blue/green**: web・api の両方を ACA の複数リビジョンモードにし、`blue`/`green` ラベルでトラフィックを切り替えます。promote / rollback は **web と api を一括**で行い、2 ティアを常に揃えます。
+
+> 図の凡例: 実線 = 本デモで作成するリソース・経路 / 点線 = 本番向けの推奨（本サンプルでは未デプロイ）。
 
 ## 戦略まとめとの対応
 
@@ -86,7 +111,7 @@ azd env set AZURE_LOCATION japaneast
 
 `up.ps1` は次を順に実行します。
 
-1. `deploy-platform.ps1 -Apply` … VNet / Azure SQL / Front Door（空 origin）を `az deployment group` で作成し、出力を `azd env set`
+1. `deploy-platform.ps1 -Apply` … VNet / Azure SQL / Front Door（空 origin）を `az deployment group` で作成し、AppHost の publish 入力は `azd env config set infra.parameters.*`、フック用の値は `azd env set` に保存
 2. `azd up` … manifest モードで ACA 環境 + api/web を provision → コンテナイメージを build/push → deploy
 3. **postdeploy フック**（`azure.yaml`）… `configure-frontdoor-origin.ps1`（Front Door origin/route = web FQDN）+ `reconcile-traffic.ps1`（`ACTIVE_LABEL=100% / candidate=0%`）
 

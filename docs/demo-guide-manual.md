@@ -55,15 +55,15 @@ az deployment group create -g $platRg -n platform `
     sqlAdminLogin=$upn sqlAdminObjectId=$me sqlAdminPrincipalType=User
 ```
 
-作成された出力を azd 環境へ流し込みます。**AppHost のパラメータ**（`infrastructureSubnetId` など、AppHost.cs の `AddParameter` と同名）と、**フックが使う値**の両方です。
+作成された出力を azd 環境へ流し込みます。**AppHost の publish 入力**は `infra.parameters.*` に、**フックが使う値**は通常の azd env 値に保存します。
 
 ```powershell
 $o = az deployment group show -g $platRg -n platform --query properties.outputs -o json | ConvertFrom-Json
 
-# AppHost パラメータ（azd が同名の env 値から Aspire パラメータへ解決する）
-azd env set infrastructureSubnetId $o.infrastructureSubnetId.value
-azd env set sqlServerName          $o.sqlServerName.value
-azd env set sqlResourceGroup       $o.sqlResourceGroup.value
+# AppHost publish 入力（repo では infra.parameters.* を source of truth にする）
+azd env config set infra.parameters.infrastructureSubnetId $o.infrastructureSubnetId.value
+azd env config set infra.parameters.sqlServerName          $o.sqlServerName.value
+azd env config set infra.parameters.sqlResourceGroup       $o.sqlResourceGroup.value
 azd env set sqlServerFqdn          $o.sqlServerFqdn.value
 
 # Front Door 配線などで参照する値
@@ -77,7 +77,7 @@ azd env set FRONTDOOR_ORIGIN_GROUP_NAME $o.frontDoorOriginGroupName.value
 azd env set ACTIVE_LABEL blue
 ```
 
-> **ここがポイント**: `infrastructureSubnetId` / `sqlServerName` / `sqlResourceGroup` は AppHost の `AddParameter(...)` と完全に同じ名前です。azd はこの azd env 値を読んで Aspire のパラメータを解決します。「外部リソースは Bicep で作り、AppHost は名前で参照する」という戦略まとめの方針を、実際に手を動かして確認できます。
+> **ここがポイント**: `infrastructureSubnetId` / `sqlServerName` / `sqlResourceGroup` は AppHost の `AddParameter(...)` と対応する publish 入力で、この repo では `infra.parameters.<name>` に保存します。`azd` はこの設定を使って Aspire の publish 必須入力を解決します。一方 `sqlServerFqdn` や `FRONTDOOR_*` はフック/スクリプト用なので `azd env set` に残します。
 
 ---
 

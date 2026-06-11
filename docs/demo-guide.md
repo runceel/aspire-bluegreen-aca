@@ -1,4 +1,4 @@
-# デモ手順書 — Aspire blue/green on ACA
+﻿# デモ手順書 — Aspire blue/green on ACA
 
 登壇・実演でそのまま使える、ステップ単位の手順書です。各ステップに「実行コマンド / 期待結果 / 見せるポイント / 想定 Q&A」を併記しています。
 
@@ -37,8 +37,18 @@
 **コマンド**
 
 ```powershell
+# Azure にログイン
+az login
+azd auth login
+
+# azd 環境を作成
 azd env new prod
+
+# リージョンとサブスクリプション ID を設定
 azd env set AZURE_LOCATION japaneast
+azd env set AZURE_SUBSCRIPTION_ID $(az account show --query id -o tsv)
+
+# デプロイ実行
 ./scripts/up.ps1
 ```
 

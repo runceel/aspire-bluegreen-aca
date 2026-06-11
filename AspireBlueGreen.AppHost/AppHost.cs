@@ -2,15 +2,6 @@ using Azure.Provisioning.AppContainers;
 
 var builder = DistributedApplication.CreateBuilder(args);
 
-// ---------------------------------------------------------------------------
-// External resource references (supplied by scripts/up.ps1 via `azd env set`
-// from the platform/ Bicep deployment outputs). These are only consumed during
-// `azd` publish; local `aspire run` does not need them.
-// ---------------------------------------------------------------------------
-var infrastructureSubnetId = builder.AddParameter("infrastructureSubnetId");
-var sqlServerName = builder.AddParameter("sqlServerName");
-var sqlResourceGroup = builder.AddParameter("sqlResourceGroup");
-
 // Release version surfaced by /api/version (API) and the web banner ("Web
 // version"). Bump it per deploy with `azd env set appVersion <x>`; it defaults
 // to 1.0.0 for local `aspire run` and for the first deploy. Wired into the api
@@ -23,9 +14,18 @@ var appVersion = builder.AddParameter("appVersion", "1.0.0", publishValueAsDefau
 //   - Local: not used (resources run as processes/containers).
 //   - Azure: created by Aspire. We join it to the pre-existing platform VNet
 //     subnet so it lives behind the same network as Front Door / SQL.
+// The subnet id is only needed for `azd` publish, so its parameter (supplied by
+// scripts/up.ps1 via `azd env config set infra.parameters.infrastructureSubnetId`
+// from platform/ Bicep outputs) is declared inside the publish-only branch. That
+// keeps local `aspire run` from prompting for a value it never uses.
 // ---------------------------------------------------------------------------
-builder.AddAzureContainerAppEnvironment("acaenv")
-    .ConfigureInfrastructure(infra =>
+var acaEnv = builder.AddAzureContainerAppEnvironment("acaenv");
+
+if (builder.ExecutionContext.IsPublishMode)
+{
+    var infrastructureSubnetId = builder.AddParameter("infrastructureSubnetId");
+
+    acaEnv.ConfigureInfrastructure(infra =>
     {
         var environment = infra.GetProvisionableResources()
             .OfType<ContainerAppManagedEnvironment>()
@@ -38,6 +38,7 @@ builder.AddAzureContainerAppEnvironment("acaenv")
             IsInternal = false,
         };
     });
+}
 
 // ---------------------------------------------------------------------------
 // SQL Database (external resource).
@@ -45,10 +46,21 @@ builder.AddAzureContainerAppEnvironment("acaenv")
 //   - Azure: an existing Azure SQL server created by platform/ Bicep.
 // The "orders" database powers the /api/orders demo only; /api/version never
 // touches SQL so the app stays up even before passwordless access is granted.
+// The existing-server name/resource group are only needed for `azd` publish, so
+// their parameters are declared inside the publish-only branch. scripts/up.ps1
+// persists them in `azd env config` under `infra.parameters.*`; local run uses
+// RunAsContainer() and never prompts for them.
 // ---------------------------------------------------------------------------
 var sql = builder.AddAzureSqlServer("sql")
-    .RunAsContainer()
-    .PublishAsExisting(sqlServerName, sqlResourceGroup);
+    .RunAsContainer();
+
+if (builder.ExecutionContext.IsPublishMode)
+{
+    var sqlServerName = builder.AddParameter("sqlServerName");
+    var sqlResourceGroup = builder.AddParameter("sqlResourceGroup");
+
+    sql.PublishAsExisting(sqlServerName, sqlResourceGroup);
+}
 
 var ordersDb = sql.AddDatabase("orders");
 
