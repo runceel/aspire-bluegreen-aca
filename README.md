@@ -109,7 +109,7 @@ azd env set AZURE_LOCATION japaneast
 ./scripts/up.ps1
 ```
 
-`up.ps1` は次を順に実行します。
+`up.ps1` は初回のみ、未設定の `infra.parameters.appVersion`（初期値 `1.0.0`）/ `AZURE_RESOURCE_GROUP`（azd 既定の `rg-<env 名>`）/ `ACTIVE_LABEL`（`blue`）を補完してから、次を順に実行します（`appVersion` は web のビルド引数で、非対話 `azd up --no-prompt` では `infra.parameters` からのみ解決されるため、未設定だと packaging が `parameter infra.parameters.appVersion not found` で失敗します）。
 
 1. `deploy-platform.ps1 -Apply` … VNet / Azure SQL / Front Door（空 origin）を `az deployment group` で作成し、AppHost の publish 入力は `azd env config set infra.parameters.*`、フック用の値は `azd env set` に保存
 2. `azd up` … manifest モードで ACA 環境 + api/web を provision → コンテナイメージを build/push → deploy
@@ -130,7 +130,7 @@ azd env set AZURE_LOCATION japaneast
 
 1. コードを書き換えて新バージョンにする
    - `src/Api/Program.cs` の `Color` / `Label` を変更（例: 緑 `#16a34a` / `green`）
-   - 新バージョン番号を設定: `azd env set appVersion 1.1.0`（api の `APP_VERSION` env と web のビルド引数へ反映）
+   - 新バージョン番号を設定: `azd env config set infra.parameters.appVersion 1.1.0`（api の `APP_VERSION` env と web のビルド引数へ反映。ビルド引数は `infra.parameters` を参照するため `azd env set` ではなくこちらを使う）
 2. 新リビジョンをデプロイ（本番トラフィックは奪わない）
    ```powershell
    azd deploy
@@ -177,6 +177,8 @@ azd env set AZURE_LOCATION japaneast
 # 例: パイプラインの 1 ジョブ
 azd auth login --client-id $AZURE_CLIENT_ID --federated-credential-provider github --tenant-id $AZURE_TENANT_ID   # OIDC
 azd env select prod                       # or azd env new + azd env set
+azd env set AZURE_RESOURCE_GROUP rg-prod              # azd は自動設定しないため明示（既定命名 rg-<env 名>。up.ps1 を使わない場合は必須）
+azd env config set infra.parameters.appVersion 1.0.0  # web ビルド引数の解決に必要（バージョン更新時はこの値を変える）
 pwsh ./scripts/preview.ps1                 # 差分の承認ゲート（手動承認ステップを挟む）
 pwsh ./scripts/deploy-platform.ps1 -Apply  # platform 適用
 azd provision                              # ACA インフラ

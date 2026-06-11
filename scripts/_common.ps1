@@ -89,8 +89,14 @@ function Get-LatestRevisionName {
         [Parameter(Mandatory)] [string] $ResourceGroup,
         [Parameter(Mandatory)] [string] $AppName
     )
-    return (az containerapp revision list -g $ResourceGroup -n $AppName `
-            --query "sort_by(@,&properties.createdTime)[-1].name" -o tsv).Trim()
+    # Do NOT sort with a JMESPath --query here. On Windows `az` is az.cmd and cmd.exe
+    # treats the "&" in "sort_by(@,&properties.createdTime)" as a command separator,
+    # splitting the argument and breaking the call. Sort in PowerShell instead.
+    $revisions = az containerapp revision list -g $ResourceGroup -n $AppName -o json | ConvertFrom-Json
+    if (-not $revisions) {
+        throw "No revisions found for Container App '$AppName' in '$ResourceGroup'."
+    }
+    return ($revisions | Sort-Object { [datetime]$_.properties.createdTime } | Select-Object -Last 1).name.Trim()
 }
 
 function Get-RevisionForLabel {

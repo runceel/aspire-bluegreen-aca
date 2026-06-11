@@ -48,9 +48,11 @@ azd env new prod
 azd env set AZURE_LOCATION japaneast
 azd env set AZURE_SUBSCRIPTION_ID $(az account show --query id -o tsv)
 
-# デプロイ実行
+# デプロイ実行（platform → azd up → Front Door 配線 → status を一括実行）
 ./scripts/up.ps1
 ```
+
+> **`up.ps1` が自動で補完する値**: 初回のみ、未設定の `infra.parameters.appVersion`（初期値 `1.0.0`）/ `AZURE_RESOURCE_GROUP`（azd 既定の `rg-<env 名>`）/ `ACTIVE_LABEL`（`blue`）を補完してから `azd up` を実行します。`appVersion` は web の Docker **ビルド引数**に使われ、`azd up --no-prompt`（非対話）では `infra.parameters.appVersion` からしか解決できません（AppHost の既定値や `azd env set` の env 変数では解決されない）。このため補完されないと `parameter infra.parameters.appVersion not found` で失敗します。バージョンを上げるときはステップ 2 で `azd env config set infra.parameters.appVersion <x>` を実行します。
 
 **期待結果**
 
@@ -80,10 +82,10 @@ const string Color = "#16a34a"; // green
 const string Label = "green";
 ```
 
-新バージョン番号を設定します（azd パラメータ `appVersion` → api の `APP_VERSION` env と web のビルド引数に反映）。
+新バージョン番号を設定します（azd パラメータ `appVersion` → api の `APP_VERSION` env と web のビルド引数に反映）。web のビルド引数も `infra.parameters` を参照するため、`azd env config set` で設定します。
 
 ```powershell
-azd env set appVersion 1.1.0
+azd env config set infra.parameters.appVersion 1.1.0
 ```
 
 **期待結果 / 見せるポイント**

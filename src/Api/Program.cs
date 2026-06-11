@@ -25,8 +25,8 @@ app.MapDefaultEndpoints();
 // Edit COLOR and LABEL here (a code change = the new image) to roll a new
 // blue/green version. The VERSION number comes from the APP_VERSION env var,
 // wired in AppHost from the `appVersion` parameter; bump it per deploy with
-// `azd env set appVersion <x>`. The front end paints its banner with COLOR and
-// shows VERSION + LABEL.
+// `azd env config set infra.parameters.appVersion <x>`. The front end paints its
+// banner with COLOR and shows VERSION + LABEL.
 const string Color = "#2563eb"; // blue
 const string Label = "blue";
 var version = builder.Configuration["APP_VERSION"] ?? "1.0.0";

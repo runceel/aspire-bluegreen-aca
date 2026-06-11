@@ -3,10 +3,13 @@ using Azure.Provisioning.AppContainers;
 var builder = DistributedApplication.CreateBuilder(args);
 
 // Release version surfaced by /api/version (API) and the web banner ("Web
-// version"). Bump it per deploy with `azd env set appVersion <x>`; it defaults
-// to 1.0.0 for local `aspire run` and for the first deploy. Wired into the api
+// version"). Bump it per deploy with `azd env config set infra.parameters.appVersion <x>`;
+// it defaults to 1.0.0 for local `aspire run` and for the first deploy. Wired into the api
 // container env AND the web image build arg below (both as APP_VERSION) so both
 // tiers report the same version (and both get a fresh revision) on a change.
+// NOTE: set it via infra.parameters (not `azd env set`): azd resolves the web
+// build arg from infra.parameters.appVersion, and `azd up --no-prompt` does not
+// apply the manifest default there (fails with "parameter infra.parameters.appVersion not found").
 var appVersion = builder.AddParameter("appVersion", "1.0.0", publishValueAsDefault: true);
 
 // ---------------------------------------------------------------------------

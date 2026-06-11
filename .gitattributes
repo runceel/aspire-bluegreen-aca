@@ -1,0 +1,8 @@
+# Files copied into Linux containers (or sourced by a Linux shell) must keep LF
+# line endings. Without this, a Windows checkout with core.autocrlf=true rewrites
+# them to CRLF, which corrupts the nginx entrypoint script ("export VAR\r" ->
+# "bad variable name") and the web container fails to start.
+*.sh        text eol=lf
+*.envsh     text eol=lf
+*.template  text eol=lf
+Dockerfile  text eol=lf

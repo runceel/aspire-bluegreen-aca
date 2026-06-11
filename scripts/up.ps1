@@ -40,10 +40,34 @@ if ($SqlAdminLogin)    { $ppArgs.SqlAdminLogin = $SqlAdminLogin }
 if ($SqlAdminObjectId) { $ppArgs.SqlAdminObjectId = $SqlAdminObjectId }
 & "$PSScriptRoot/deploy-platform.ps1" @ppArgs
 
-# Seed blue/green production label on first run.
+# Seed values azd does not set on its own so the one-command path works unattended
+# (azd up --no-prompt) and the postdeploy hooks have everything they need.
 $envValues = Get-AzdEnvValues
+
+# Production traffic label (first run).
 if ([string]::IsNullOrWhiteSpace($envValues['ACTIVE_LABEL'])) {
     Set-AzdEnv 'ACTIVE_LABEL' 'blue'
+}
+
+# appVersion is consumed as the web Docker BUILD ARG. Under `azd up --no-prompt` azd
+# resolves build-arg parameter references from infra.parameters.appVersion (NOT env
+# vars, NOT the manifest's published default), so it must exist or packaging fails
+# with "parameter infra.parameters.appVersion not found". Seed the initial demo
+# version; bump later with: azd env config set infra.parameters.appVersion <x>
+if ([string]::IsNullOrWhiteSpace((Get-AzdInfraParameter 'appVersion'))) {
+    Set-AzdInfraParameter 'appVersion' '1.0.0'
+}
+
+# azd (1.25.x) does not write AZURE_RESOURCE_GROUP for this subscription-scoped Aspire
+# app, but the postdeploy hooks (and bluegreen-*.ps1) require it. azd defaults the app
+# resource group to rg-<env>; set it explicitly so it is deterministic and available
+# to the hooks that run during `azd up`.
+if ([string]::IsNullOrWhiteSpace($envValues['AZURE_RESOURCE_GROUP'])) {
+    $envName = $envValues['AZURE_ENV_NAME']
+    if ([string]::IsNullOrWhiteSpace($envName)) {
+        throw 'AZURE_ENV_NAME is not set. Run "azd env new <name>" (or "azd env select <name>") first.'
+    }
+    Set-AzdEnv 'AZURE_RESOURCE_GROUP' "rg-$envName"
 }
 
 # ----- Step 2: azd up (provision + deploy + postdeploy hooks) -----
