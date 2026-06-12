@@ -3,15 +3,15 @@
   Postdeploy hook: VERIFY (do not mutate) the blue/green traffic state after a deploy.
 
 .DESCRIPTION
-  Traffic is now DECLARATIVE. The api/web Container App bicep (AppHost.cs
+  Traffic is DECLARATIVE. The api/web Container App bicep (AppHost.cs
   ConfigureBlueGreen) pins each color's ingress weight from
   infra.parameters.productionLabel:
       weight = (productionLabel == '<color>') ? 100 : 0
-  so `azd deploy` itself parks the freshly built (candidate) revision at 0% and keeps
+  so `az deployment` itself parks the freshly built (candidate) revision at 0% and keeps
   production at 100% -- there is no post-deploy window where a new build can steal
   production traffic. Promotion/rollback are explicit (bluegreen-*.ps1).
 
-  This hook therefore NO LONGER sets traffic. It only reports the live state and warns
+  This hook only reports the live state and warns
   if it diverges from the declared production label (which would indicate a manual/portal
   edit, or a deploy that did not apply the expected parameters).
 #>

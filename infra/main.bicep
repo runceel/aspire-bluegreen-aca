@@ -7,7 +7,7 @@
 // are pushed into the azd environment so the AppHost parameters resolve.
 //
 // Scope: resource group. Deploy into a dedicated platform resource group that
-// is created BEFORE `azd up`, because the ACA environment joins the VNet subnet
+// is created BEFORE `scripts/up.ps1`, because the ACA environment joins the VNet subnet
 // defined here.
 // ---------------------------------------------------------------------------
 targetScope = 'resourceGroup'

@@ -5,9 +5,9 @@
   environment/config so the Aspire AppHost parameters resolve.
 
 .DESCRIPTION
-  This is a standalone step deliberately kept OUT of azd's preprovision hook so
-  that `azd provision --preview` never touches real platform resources. Call it
-  from scripts/up.ps1 (-Apply) and scripts/preview.ps1 (-WhatIf).
+  This is a standalone step deliberately kept OUT of azd hooks so that previews
+  stay side-effect free for platform resources. Call it from scripts/up.ps1
+  (-Apply) and scripts/preview.ps1 (-WhatIf).
 
 .PARAMETER Apply
   Create/update the platform resources and push outputs to the azd env/config.
@@ -71,7 +71,7 @@ if (-not $SqlAdminLogin) {
     throw 'SqlAdminLogin could not be determined. Pass -SqlAdminLogin and -SqlAdminObjectId.'
 }
 
-$templateFile = Join-Path $PSScriptRoot '..' 'platform' 'main.bicep'
+$templateFile = Join-Path $PSScriptRoot '..' 'infra' 'main.bicep'
 $deploymentName = "platform-$(Get-Date -Format 'yyyyMMddHHmmss')"
 
 Write-Section "Platform resource group: $PlatformResourceGroup ($Location)"

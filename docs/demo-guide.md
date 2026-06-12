@@ -48,15 +48,15 @@ azd env new prod
 azd env set AZURE_LOCATION japaneast
 azd env set AZURE_SUBSCRIPTION_ID $(az account show --query id -o tsv)
 
-# デプロイ実行（platform → azd up → Front Door 配線 → status を一括実行）
+# デプロイ実行（platform: `infra/main.bicep` → aspire publish → az deployment → postdeploy → status を一括実行）
 ./scripts/up.ps1
 ```
 
-> **`up.ps1` が自動で補完する値**: 初回のみ、未設定の値を補完してから `azd up` を実行します。`infra.parameters.appVersion`（初期値 `1.0.0`）/ `AZURE_RESOURCE_GROUP`（azd 既定の `rg-<env 名>`）/ `ACTIVE_LABEL`（`blue`）に加え、宣言的 blue/green 状態（`infra.parameters.productionLabel=blue` / `blueRevisionSuffix=v1-0-0` / `greenRevisionSuffix=`（空））を補完します。`appVersion` はバージョンの唯一の出所で、api の `APP_VERSION` env・web の Docker **ビルド引数**・各アプリの**リビジョンサフィックス**（`v` + バージョン、`.`→`-`）の導出に使われます。`infra.parameters.appVersion` からしか解決されない（AppHost の既定値や `azd env set` の env 変数では解決されない）ため、補完されないと `parameter infra.parameters.appVersion not found` で失敗します。バージョンを上げるときはステップ 3 の `bluegreen-deploy.ps1 -Version <x>` を使います。
+> **`up.ps1` が自動で補完する値**: 初回のみ、未設定の値を補完してから「platform 適用（`infra/main.bicep`）→ `aspire publish` → `az deployment` → postdeploy フック」を実行します。`infra.parameters.appVersion`（初期値 `1.0.0`）/ `AZURE_RESOURCE_GROUP`（azd 既定の `rg-<env 名>`）/ `ACTIVE_LABEL`（`blue`）に加え、宣言的 blue/green 状態（`infra.parameters.productionLabel=blue` / `blueRevisionSuffix=v1-0-0` / `greenRevisionSuffix=`（空））を補完します。`appVersion` はバージョンの唯一の出所で、api の `APP_VERSION` env・web の Docker **ビルド引数**・各アプリの**リビジョンサフィックス**（`v` + バージョン、`.`→`-`）の導出に使われます。`infra.parameters.appVersion` からしか解決されない（AppHost の既定値や `azd env set` の env 変数では解決されない）ため、補完されないと `parameter infra.parameters.appVersion not found` で失敗します。バージョンを上げるときはステップ 3 の `bluegreen-deploy.ps1 -Version <x>` を使います。
 
 **期待結果**
 
-- `up.ps1` が「Step 1/3 platform → Step 2/3 azd up → Step 3/3 status」を順に実行。
+- `up.ps1` が「Step 1/4 platform（infra）→ Step 2/4 aspire publish → Step 3/4 az deployment → Step 4/4 postdeploy hooks」を順に実行し、最後に status を表示。
 - 末尾に `Front Door endpoint: https://<...>.azurefd.net` が表示され、`bluegreen-status.ps1` が web/api ともに `blue = 100%` を表示。
 
 **見せるポイント**
@@ -66,7 +66,7 @@ azd env set AZURE_SUBSCRIPTION_ID $(az account show --query id -o tsv)
 
 **想定 Q&A**
 
-- Q: Front Door の origin はいつ設定された？ → A: `azd up` の **postdeploy フック**（`configure-frontdoor-origin.ps1`）が web の FQDN を自動で配線します。
+- Q: Front Door の origin はいつ設定された？ → A: `up.ps1` の Step 4（postdeploy フック）で `configure-frontdoor-origin.ps1` が web の FQDN を自動で配線します。
 - Q: SQL が無くても動く？ → A: `/api/version` は SQL 非依存。`/api/orders` だけが SQL を使い、未接続でもインメモリにフォールバックします。
 
 ---
@@ -87,7 +87,7 @@ const string Label = "green";
 **期待結果 / 見せるポイント**
 
 - 差分は数行のみ。「**コードを変えるだけ**で新バージョンになる」ことを強調。
-- （任意）`./scripts/preview.ps1` を実行し、`azd provision --preview` が **インフラ差分なし**（コンテナアプリはデプロイ層で更新されるため provision はスキップ）を示すことで、安全な変更であることを確認できます。
+- （任意）`./scripts/preview.ps1` を実行し、`infra/main.bicep` の what-if と `aspire publish` + `az deployment --what-if` の差分を確認することで、安全な変更であることを確認できます。
 
 ---
 
@@ -99,15 +99,15 @@ const string Label = "green";
 ./scripts/bluegreen-deploy.ps1 -Version 1.1.0
 ```
 
-> このスクリプトは「`appVersion` の更新 → candidate（green）の `greenRevisionSuffix` 設定 → `azd deploy` → status 表示」を一括で行います。`productionLabel` は変更しません（昇格はステップ 5）。
+> このスクリプトは「`appVersion` の更新 → candidate（green）の `greenRevisionSuffix` 設定 → `aspire publish` + `az deployment` → status 表示」を一括で行います。`productionLabel` は変更しません（昇格はステップ 5）。
 >
 > **バージョンは毎回新しくします**。リビジョンサフィックスは `appVersion` から決定的に導出されるため、同じバージョンを再デプロイすると `revision with suffix ... already exists` で失敗します（スクリプトはビルド前に検知して止めます）。
 
 **期待結果**
 
 - 新しいコンテナイメージが build/push され、web/api に**新リビジョン**（`<app>--v1-1-0`）が作成される。
-- トラフィックは **宣言的**。コンテナアプリの bicep が `productionLabel=blue` から重みを導出（`blue=100% / green=0%`）するため、`azd deploy` 自体が新（green）リビジョンを **0% に固定**したまま blue を 100% に保ちます。デプロイ後にトラフィックを後付けで調整する隙間はありません。
-- postdeploy フックの `reconcile-traffic.ps1` は **検証専用**で、宣言通り（production=100% / candidate=0%）かを確認するだけです（トラフィックは変更しません）。
+- トラフィックは **宣言的**。コンテナアプリの bicep が `productionLabel=blue` から重みを導出（`blue=100% / green=0%`）するため、`az deployment` 自体が新（green）リビジョンを **0% に固定**したまま blue を 100% に保ちます。デプロイ後にトラフィックを後付けで調整する隙間はありません。
+- 必要なら `./scripts/reconcile-traffic.ps1` を実行して、宣言通り（production=100% / candidate=0%）かを検証できます（トラフィックは変更しません）。
 
 **見せるポイント**
 
@@ -116,8 +116,8 @@ const string Label = "green";
 
 **想定 Q&A**
 
-- Q: なぜ green が 0% なの？ → A: コンテナアプリの ingress traffic を **bicep で宣言**しており、`weight = (productionLabel == '<color>') ? 100 : 0` です。candidate は常に 0% で作成されるため、`azd deploy` の瞬間も本番露出はゼロです。
-- Q: `reconcile-traffic.ps1` は何をする？ → A: 以前はトラフィックを設定していましたが、宣言的になった今は**状態の検証のみ**です（不一致を警告）。
+- Q: なぜ green が 0% なの？ → A: コンテナアプリの ingress traffic を **bicep で宣言**しており、`weight = (productionLabel == '<color>') ? 100 : 0` です。candidate は常に 0% で作成されるため、`az deployment` の瞬間も本番露出はゼロです。
+- Q: `reconcile-traffic.ps1` は何をする？ → A: **状態の検証のみ**です。宣言どおり（production=100% / candidate=0%）かを確認し、不一致を警告します。
 
 ---
 
@@ -156,7 +156,7 @@ const string Label = "green";
 
 **期待結果**
 
-- web/api ともに **green=100% / blue=0%**（即時の `az ... traffic set`）。昇格後、宣言的状態 `infra.parameters.productionLabel` が `green` に同期され、`ACTIVE_LABEL` も `green` に更新されます。これにより以降の `azd deploy` でも green が本番のまま維持されます。
+- web/api ともに **green=100% / blue=0%**（即時の `az ... traffic set`）。昇格後、宣言的状態 `infra.parameters.productionLabel` が `green` に同期され、`ACTIVE_LABEL` も `green` に更新されます。これにより以降の `az deployment` でも green が本番のまま維持されます。
 
 **見せるポイント**
 
@@ -179,7 +179,7 @@ const string Label = "green";
 
 **期待結果 / 見せるポイント**
 
-- web/api ともに **blue=100%** に即時復帰。宣言的状態 `infra.parameters.productionLabel` と `ACTIVE_LABEL` が `blue` に戻る（以降の `azd deploy` でも blue が維持される）。
+- web/api ともに **blue=100%** に即時復帰。宣言的状態 `infra.parameters.productionLabel` と `ACTIVE_LABEL` が `blue` に戻る（以降の `az deployment` でも blue が維持される）。
 - Front Door の URL を再読み込みすると **元の青いバナー**。「問題があっても 1 コマンドで即時復旧」を強調。
 
 **想定 Q&A**

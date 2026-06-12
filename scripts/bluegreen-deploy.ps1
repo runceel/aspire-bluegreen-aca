@@ -90,22 +90,13 @@ if ($LASTEXITCODE -ne 0) { throw 'az deployment failed.' }
 Write-Section 'Deployment complete'
 Write-Host "Candidate revision parked at 0% traffic: $candidateLabel"
 Write-Host "Production still at 100%: $productionLabel"
-Write-Host ""
-Write-Host "Next: Run './scripts/bluegreen-status.ps1' to see the candidate revision URLs"
-Write-Host "      or   './scripts/bluegreen-promote.ps1' to promote to production"
-
-
-Write-Host "appVersion              = $Version" -ForegroundColor DarkGray
-Write-Host "${candidateLabel}RevisionSuffix = $suffix  (candidate revision: <app>--$suffix, 0% traffic)" -ForegroundColor DarkGray
-
-# Build images + redeploy the Container App modules. Declarative traffic keeps production
-# at 100% and parks the new candidate revision at 0% in the same deployment.
-azd deploy --no-prompt
-if ($LASTEXITCODE -ne 0) { throw 'azd deploy failed.' }
 
 Write-Section 'blue/green status'
 & "$PSScriptRoot/bluegreen-status.ps1"
 
+Write-Host ''
+Write-Host "appVersion              = $Version" -ForegroundColor DarkGray
+Write-Host "${candidateLabel}RevisionSuffix = $suffix  (candidate revision: <app>--$suffix, 0% traffic)" -ForegroundColor DarkGray
 Write-Host ''
 Write-Host "Candidate '$candidateLabel' (v$Version) is live at 0%. Validate it via its label URL," -ForegroundColor Cyan
 Write-Host "then promote with: ./scripts/bluegreen-promote.ps1" -ForegroundColor Cyan

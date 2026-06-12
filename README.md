@@ -8,7 +8,7 @@ Aspire 13.4 で GA になった `aspire publish` / `aspire deploy` と Azure.Pro
 - デプロイ: **Aspire 13.4 `aspire publish` + `az deployment`**（Azure.Provisioning API で IaC 生成）
 - 外部リソース: **VNet / Azure SQL / Front Door**（`infra/` の Bicep で管理、Aspire から参照）
 
-> **Aspire 13.4 GA 機能**: AppHost は Azure.Provisioning API で完全な IaC を生成し、`aspire publish` で bicep/bicepparam を出力。manifest mode（`azd up`）は使用していません。
+> **Aspire 13.4 GA 機能**: AppHost は Azure.Provisioning API で完全な IaC を生成し、`aspire publish` で bicep/bicepparam を出力します。
 
 ## アーキテクチャ
 
@@ -60,9 +60,9 @@ flowchart TB
 | --- | --- |
 | ACA 環境 | AppHost → `aspire publish` → `az deployment` で作成。`ConfigureInfrastructure` で platform VNet サブネット統合 |
 | API / Web | `PublishAsAzureContainerApp()` で Azure.Provisioning API が bicep 生成。複数リビジョンモード + 宣言的 traffic 制御 |
-| SQL Database | `PublishAsExisting()` で既存 Azure SQL サーバーを参照。実体は `platform/` Bicep で作成 |
-| VNet | `platform/` Bicep で作成。AppHost は `ConfigureInfrastructure` で subnet ID を受け取り統合 |
-| Front Door | `platform/` Bicep で作成。origin 配線は postdeploy フック |
+| SQL Database | `PublishAsExisting()` で既存 Azure SQL サーバーを参照。実体は `infra/` Bicep で作成 |
+| VNet | `infra/` Bicep で作成。AppHost は `ConfigureInfrastructure` で subnet ID を受け取り統合 |
+| Front Door | `infra/` Bicep で作成。origin 配線は postdeploy フック |
 | 差分確認 | `scripts/preview.ps1` → `aspire publish` + `az deployment --what-if` |
 | Blue/Green | 宣言的 traffic weights（App Host bicep） + 手動 promote/rollback スクリプト |
 
@@ -143,7 +143,7 @@ azd env set AZURE_LOCATION japaneast
 ./scripts/preview.ps1
 ```
 
-- `deploy-platform.ps1 -WhatIf`（platform 差分）+ `azd provision --preview`（ACA インフラ差分）を実行します。
+- `deploy-platform.ps1 -WhatIf`（`infra/main.bicep` の差分）+ `aspire publish` + `az deployment group create --what-if`（ACA インフラ差分）を実行します。
 - preprovision フックを使わず、Front Door / トラフィック変更は postdeploy フックに限定しているため、**preview は実リソースを変更しません**。
 
 ## blue/green デモの流れ
@@ -154,7 +154,7 @@ azd env set AZURE_LOCATION japaneast
    ```powershell
    ./scripts/bluegreen-deploy.ps1 -Version 1.1.0
    ```
-   `appVersion` の更新 → candidate（green）の `greenRevisionSuffix` 設定 → `azd deploy` を一括実行します。コンテナアプリ bicep が `productionLabel=blue` から **green=0% / blue=100%** を宣言するため、新リビジョンは**常に 0% で作成**されます（デプロイ中も本番露出ゼロ）。`productionLabel` は変更しません。
+   `appVersion` の更新 → candidate（green）の `greenRevisionSuffix` 設定 → `aspire publish` + `az deployment` を一括実行します。コンテナアプリ bicep が `productionLabel=blue` から **green=0% / blue=100%** を宣言するため、新リビジョンは**常に 0% で作成**されます（デプロイ中も本番露出ゼロ）。`productionLabel` は変更しません。
 
    > リビジョンサフィックスは `appVersion` から決定的に導出されるため、**デプロイのたびに新しいバージョンが必要**です（同一バージョンの再デプロイは `revision with suffix ... already exists` で失敗。`bluegreen-deploy.ps1` がビルド前に検知）。promote/rollback はトラフィックを動かすだけで再デプロイしないため影響を受けません。
 3. candidate を検証（本番に影響なし）
@@ -167,7 +167,7 @@ azd env set AZURE_LOCATION japaneast
    ./scripts/bluegreen-promote.ps1                    # 即時 100%
    ./scripts/bluegreen-promote.ps1 -CandidateWeight 20 # 段階的（カナリア）も可
    ```
-   完全昇格時は即時の `az ... traffic set` に加え、宣言的状態 `infra.parameters.productionLabel` も同期するため、以降の `azd deploy` でも昇格が維持されます。
+   完全昇格時は即時の `az ... traffic set` に加え、宣言的状態 `infra.parameters.productionLabel` も同期するため、以降の `az deployment` でも昇格が維持されます。
 5. 問題があれば即時ロールバック
    ```powershell
    ./scripts/bluegreen-rollback.ps1
@@ -182,7 +182,7 @@ azd env set AZURE_LOCATION japaneast
 | スクリプト | 役割 |
 | --- | --- |
 | `up.ps1` | E2E 一式（blue/green パラメータの seed → platform → aspire publish → az deployment → postdeploy フック） |
-| `preview.ps1` | 差分ゲート（platform what-if + aspire publish + az deployment --what-if、副作用なし） |
+| `preview.ps1` | 差分ゲート（`infra/main.bicep` what-if + aspire publish + az deployment --what-if、副作用なし） |
 | `deploy-platform.ps1` | platform の `-WhatIf`/`-Apply`。出力を `azd env config` で保存 |
 | `bluegreen-deploy.ps1` | candidate（green）を 0% でデプロイ（`appVersion` 更新 → aspire publish → az deployment） |
 | `configure-frontdoor-origin.ps1` | postdeploy フック: Front Door の origin/route に web FQDN を設定 |
@@ -230,7 +230,7 @@ az group delete -n rg-prod-platform --yes
 ## 補足
 
 - `/api/version` は SQL 非依存のため、SQL 未接続でもアプリは起動し blue/green デモが成立します。
-- SQL のパスワードレスアクセスは AppHost が生成する `api-roles-sql` モジュールで `azd provision` 時に付与されます（手動で行う場合は `grant-sql-access.ps1`）。
+- SQL のパスワードレスアクセスは AppHost が生成する `api-roles-sql` モジュールで `az deployment` 時に付与されます（手動で行う場合は `grant-sql-access.ps1`）。
 - 本サンプルはデモ用に SQL の「Azure サービスからのアクセス許可」を有効化しています。本番ではプライベートエンドポイントの利用を推奨します。
 
 ## ライセンス
