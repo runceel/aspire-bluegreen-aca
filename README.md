@@ -66,6 +66,8 @@ flowchart TB
 | 適用前差分 | `azd provision --preview`（GA） | `scripts/preview.ps1`（承認ゲート） |
 | blue/green | 複数リビジョン + トラフィック分割 + ラベル（GA） | `scripts/bluegreen-*.ps1`（`az containerapp` ラッパー） |
 
+blue/green の詳しい設計方針、宣言的 traffic と promote/rollback の状態遷移は [`docs/bluegreen-strategy.md`](docs/bluegreen-strategy.md) を参照してください。
+
 ## ディレクトリ構成
 
 ```text
@@ -76,6 +78,7 @@ src/web/                        React + Vite フロント（+ Dockerfile / nginx
 platform/                       外部リソースの Bicep（VNet / SQL / Front Door / Key Vault）
 scripts/                        azd ラッパー + blue/green スクリプト
 azure.yaml                      azd 設定 + postdeploy フック
+docs/bluegreen-strategy.md      blue/green 戦略・状態モデル・設計判断（日本語）
 docs/demo-guide.md              デモ手順書（スクリプト版 / 日本語）
 docs/demo-guide-manual.md       デモ手順書（手動実行版 / 日本語）
 LICENSE                         MIT License

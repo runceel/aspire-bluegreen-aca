@@ -144,6 +144,7 @@ else
         .WithExternalHttpEndpoints()
         .PublishAsAzureContainerApp((infra, app) =>
         {
+            
             ConfigureBlueGreen(infra, app, "web",
                 appVersion, productionLabel!, blueRevisionSuffix!, greenRevisionSuffix!);
         });
