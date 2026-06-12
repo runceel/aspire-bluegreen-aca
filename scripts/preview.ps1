@@ -1,16 +1,12 @@
 <#
 .SYNOPSIS
-  Side-effect-free change preview (approval gate):
-    1. platform what-if  (deploy-platform.ps1 -WhatIf)
-    2. azd provision --preview  (Aspire-generated ACA infra diff)
+  Show what changes will be deployed (approval gate for human review).
+  
+  Runs platform what-if + aspire publish + az deployment what-if without making
+  any actual changes to resources (previews are side-effect free).
 
-.DESCRIPTION
-  Neither step applies changes. The platform what-if may create an EMPTY platform
-  resource group so the group-scoped what-if can run, but no billable resources.
-
-  azd provision --preview needs the AppHost parameters (subnet id, SQL server,
-  SQL resource group) to be resolvable via infra.parameters.*. If platform has
-  not been applied yet they are unknown, so that step is skipped with a hint.
+.EXAMPLE
+  ./scripts/preview.ps1
 #>
 [CmdletBinding()]
 param(
@@ -34,21 +30,27 @@ if ($SqlAdminLogin)    { $ppArgs.SqlAdminLogin = $SqlAdminLogin }
 if ($SqlAdminObjectId) { $ppArgs.SqlAdminObjectId = $SqlAdminObjectId }
 & "$PSScriptRoot/deploy-platform.ps1" @ppArgs
 
-# ----- Step 2: azd provision --preview -----
-Write-Section 'Preview 2/2: azd provision --preview (Aspire infra)'
-$missingInfraParameters = @(
-    foreach ($parameterName in @('infrastructureSubnetId', 'sqlServerName', 'sqlResourceGroup')) {
-        if ([string]::IsNullOrWhiteSpace((Get-AzdInfraParameter $parameterName))) {
-            $parameterName
-        }
-    }
-)
+# ----- Step 2: aspire publish + az deployment what-if -----
+Write-Section 'Preview 2/2: aspire infrastructure what-if'
+$envValues = Get-AzdEnvValues
+$resourceGroup = Get-RequiredEnv -Env $envValues -Name 'AZURE_RESOURCE_GROUP'
 
-if ($missingInfraParameters.Count -gt 0) {
-    Write-Host "Skipped: platform outputs not in azd env config yet ($($missingInfraParameters -join ', '))." -ForegroundColor Yellow
-    Write-Host 'Run "./scripts/deploy-platform.ps1 -Apply" once, then preview shows the ACA infra diff.' -ForegroundColor Yellow
-    return
-}
+Write-Host 'Running: aspire publish'
+$aspireOutput = './aspire-publish'
+Invoke-AspirePublish -OutputPath $aspireOutput -Force
 
-azd provision --preview
-if ($LASTEXITCODE -ne 0) { throw 'azd provision --preview failed.' }
+$bicepFile = Get-AspirePublishBicepFile $aspireOutput
+$bicepParamFile = Get-AspirePublishBicepParamFile $aspireOutput
+Write-Host "Generated bicep: $bicepFile"
+Write-Host "Generated bicepparam: $bicepParamFile"
+Write-Host ""
+
+Write-Host 'Running: az deployment group create --what-if'
+az deployment group create `
+    --resource-group $resourceGroup `
+    --template-file $bicepFile `
+    --parameters $bicepParamFile `
+    --what-if | Write-Host
+
+Write-Host ""
+Write-Host "Review the changes above. If satisfied, run './scripts/up.ps1' to deploy."

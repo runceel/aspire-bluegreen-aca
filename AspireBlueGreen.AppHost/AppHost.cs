@@ -6,36 +6,23 @@ using Azure.Provisioning.Expressions;
 var builder = DistributedApplication.CreateBuilder(args);
 
 // Release version surfaced by /api/version (API) and the web banner ("Web
-// version"). Bump it per deploy with `azd env config set infra.parameters.appVersion <x>`
-// (scripts use Set-AzdInfraParameter / bluegreen-deploy.ps1). It defaults to 1.0.0 for
-// local `aspire run` only. Wired into the api container env (appversion_value) AND the
-// web image build arg (both as APP_VERSION) so both tiers report the same version, and
-// it also DERIVES each app's revision suffix ('v' + appVersion, dots -> dashes) so a
-// version bump mints a fresh blue/green revision.
-// IMPORTANT: published WITHOUT a default (publishValueAsDefault: false) so it is emitted
-// as `{{ parameter "appVersion" }}` and resolved from infra.parameters.appVersion (config
-// store) — the SAME store the api env, web build arg, and the blue/green params all read,
-// so one `Set-AzdInfraParameter appVersion <x>` updates every tier consistently. Because
-// there is no published default, infra.parameters.appVersion MUST be seeded before any
-// `azd up`/`azd deploy` (scripts/up.ps1 does this; the manual guide sets it explicitly),
-// otherwise packaging fails with "parameter infra.parameters.appVersion not found".
+// version"). Bump it per deploy with script bluegreen-deploy.ps1. It defaults
+// to 1.0.0 for local `aspire run`. Wired into the api container env (APP_VERSION)
+// and the web build arg (both as APP_VERSION) so both tiers report the same
+// version. It also DERIVES each app's revision suffix ('v' + appVersion,
+// dots -> dashes) so a version bump mints a fresh blue/green revision.
 var appVersion = builder.AddParameter("appVersion", "1.0.0", publishValueAsDefault: false);
 
 // ---------------------------------------------------------------------------
 // Blue/green deployment parameters (publish-only; never used by local `aspire
 // run`). They drive the DECLARATIVE ingress traffic + deterministic revision
-// suffix emitted into the api/web Container App bicep (see ConfigureBlueGreen
-// at the bottom of this file). Declared WITHOUT publishValueAsDefault so Aspire
-// emits them as `{{ parameter "<name>" }}` in the generated *.tmpl.bicepparam,
-// which azd resolves from `infra.parameters.<name>` (config store) — the store
-// that scripts/_common.ps1 Set-AzdInfraParameter writes. scripts/up.ps1 seeds
-// them before `azd up`; promote/rollback flip productionLabel.
+// suffix emitted into the api/web Container Apps (see ConfigureBlueGreen
+// at the bottom of this file).
 //   - productionLabel        : "blue" | "green" — the color currently at 100%.
 //   - blueRevisionSuffix     : revision suffix carrying the blue version (e.g. v1-0-0); "" if absent.
 //   - greenRevisionSuffix    : revision suffix carrying the green version; "" if absent.
-// The suffix of the revision created by THIS deploy is DERIVED from appVersion in
-// bicep ('v' + replace(appVersion, '.', '-')) so bumping appVersion is enough — the
-// candidate's *RevisionSuffix param is set to the same value by the deploy script.
+// The suffix of the revision created by THIS deploy is DERIVED from appVersion
+// ('v' + replace(appVersion, '.', '-')) so bumping appVersion is enough.
 // ---------------------------------------------------------------------------
 IResourceBuilder<ParameterResource>? productionLabel = null;
 IResourceBuilder<ParameterResource>? blueRevisionSuffix = null;
@@ -48,14 +35,10 @@ if (builder.ExecutionContext.IsPublishMode)
 }
 
 // ---------------------------------------------------------------------------
-// Azure Container Apps environment.
+// Azure Container Apps environment (VNet-integrated).
 //   - Local: not used (resources run as processes/containers).
-//   - Azure: created by Aspire. We join it to the pre-existing platform VNet
-//     subnet so it lives behind the same network as Front Door / SQL.
-// The subnet id is only needed for `azd` publish, so its parameter (supplied by
-// scripts/up.ps1 via `azd env config set infra.parameters.infrastructureSubnetId`
-// from platform/ Bicep outputs) is declared inside the publish-only branch. That
-// keeps local `aspire run` from prompting for a value it never uses.
+//   - Azure: created with full VNet integration, joined to the platform VNet
+//     subnet provisioned separately (via platform/main.bicep).
 // ---------------------------------------------------------------------------
 var acaEnv = builder.AddAzureContainerAppEnvironment("acaenv");
 
@@ -79,15 +62,12 @@ if (builder.ExecutionContext.IsPublishMode)
 }
 
 // ---------------------------------------------------------------------------
-// SQL Database (external resource).
+// SQL Database (external resource created by platform/main.bicep).
 //   - Local: a SQL Server container (no Azure required for `aspire run`).
 //   - Azure: an existing Azure SQL server created by platform/ Bicep.
-// The "orders" database powers the /api/orders demo only; /api/version never
-// touches SQL so the app stays up even before passwordless access is granted.
-// The existing-server name/resource group are only needed for `azd` publish, so
-// their parameters are declared inside the publish-only branch. scripts/up.ps1
-// persists them in `azd env config` under `infra.parameters.*`; local run uses
-// RunAsContainer() and never prompts for them.
+// The "orders" database is created by Aspire (AddDatabase) on top of the
+// existing server. /api/version never touches SQL, so the API must start
+// cleanly even before passwordless access is granted.
 // ---------------------------------------------------------------------------
 var sql = builder.AddAzureSqlServer("sql")
     .RunAsContainer();
@@ -106,7 +86,8 @@ var ordersDb = sql.AddDatabase("orders");
 // Backend API (ASP.NET Core). Published as an Azure Container App in
 // multiple-revisions mode so blue and green revisions can coexist and traffic
 // can be split by label. External ingress lets the candidate revision's label
-// FQDN be validated directly during a blue/green rollout.
+// FQDN be validated directly during a blue/green rollout. Passwordless SQL
+// access is configured via the generated api-roles-sql module.
 // ---------------------------------------------------------------------------
 var api = builder.AddProject<Projects.AspireBlueGreen_Api>("api")
     .WithReference(ordersDb)
@@ -115,18 +96,18 @@ var api = builder.AddProject<Projects.AspireBlueGreen_Api>("api")
     .PublishAsAzureContainerApp((infra, app) =>
     {
         ConfigureBlueGreen(infra, app, "api",
-            appVersion, productionLabel!, blueRevisionSuffix!, greenRevisionSuffix!);
+            appVersion, productionLabel, blueRevisionSuffix, greenRevisionSuffix);
     });
 
 // ---------------------------------------------------------------------------
 // Frontend (React + Vite). Two GA paths depending on execution context:
 //   - Run  (aspire run): the Vite dev server (npm run dev) with a /api proxy
 //     to the API (configured in vite.config.ts via service discovery env vars).
-//   - Publish (azd):     a multi-stage nginx image (src/web/Dockerfile) that
-//     serves the built SPA and reverse-proxies /api to the API. nginx reads the
-//     API URL from the service-discovery env var injected by WithReference(api),
-//     so the browser stays on a single origin and a revision label FQDN works
-//     too. Published as an ACA app in multiple-revisions mode to mirror the API.
+//   - Publish (aspire publish): a multi-stage nginx image (src/web/Dockerfile)
+//     that serves the built SPA and reverse-proxies /api to the API. nginx reads
+//     the API URL from the service-discovery env var injected by WithReference(api),
+//     so the browser stays on a single origin and a revision label FQDN works too.
+//     Published as an ACA app in multiple-revisions mode to mirror the API.
 // ---------------------------------------------------------------------------
 if (builder.ExecutionContext.IsRunMode)
 {
@@ -144,9 +125,8 @@ else
         .WithExternalHttpEndpoints()
         .PublishAsAzureContainerApp((infra, app) =>
         {
-            
             ConfigureBlueGreen(infra, app, "web",
-                appVersion, productionLabel!, blueRevisionSuffix!, greenRevisionSuffix!);
+                appVersion, productionLabel, blueRevisionSuffix, greenRevisionSuffix);
         });
 }
 
@@ -156,8 +136,8 @@ builder.Build().Run();
 // Emits DECLARATIVE blue/green ingress traffic + a deterministic revision suffix
 // into the generated Container App bicep, driven entirely by azd parameters.
 //
-// Why declarative (not a post-deploy hook): `azd deploy`/ARM rewrites the
-// container app's ingress.traffic on every deploy. If traffic is only patched
+// Why declarative (not a post-deploy hook): `aspire publish` → `az deployment`
+// rewrites the container app's ingress.traffic. If traffic is only patched
 // afterwards by a script, there is a window where the freshly built revision
 // takes 100% of production. By DECLARING traffic in bicep, the candidate color
 // is pinned at 0% by the same deployment that creates it -> zero prod exposure.
@@ -175,10 +155,14 @@ static void ConfigureBlueGreen(
     ContainerApp app,
     string appName,
     IResourceBuilder<ParameterResource> appVersion,
-    IResourceBuilder<ParameterResource> productionLabel,
-    IResourceBuilder<ParameterResource> blueRevisionSuffix,
-    IResourceBuilder<ParameterResource> greenRevisionSuffix)
+    IResourceBuilder<ParameterResource>? productionLabel,
+    IResourceBuilder<ParameterResource>? blueRevisionSuffix,
+    IResourceBuilder<ParameterResource>? greenRevisionSuffix)
 {
+    // Null check: only configure blue/green when in publish mode (parameters are non-null)
+    if (productionLabel == null || blueRevisionSuffix == null || greenRevisionSuffix == null)
+        return;
+
     app.Configuration.ActiveRevisionsMode = ContainerAppActiveRevisionsMode.Multiple;
 
     var appVer = appVersion.AsProvisioningParameter(infra, "appVersion");
@@ -188,9 +172,7 @@ static void ConfigureBlueGreen(
 
     // The revision created by THIS deploy gets a deterministic, version-derived suffix
     // ('v' + appVersion with '.' -> '-', e.g. 1.0.0 => v1-0-0) so the declarative
-    // traffic block can reference revisions by predictable name. Bumping appVersion is
-    // therefore enough to mint a new revision; the candidate color's *RevisionSuffix
-    // param is set to the same value by the deploy script.
+    // traffic block can reference revisions by predictable name.
     app.Template.RevisionSuffix = new InterpolatedStringExpression(
     [
         new StringLiteralExpression("v"),

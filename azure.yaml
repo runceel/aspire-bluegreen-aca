@@ -2,22 +2,22 @@
 
 name: aspire-bluegreen-aca
 metadata:
-  template: aspire-bluegreen-aca@1.0.0
+  template: aspire-bluegreen-aca@2.0.0
 
-# Single Aspire AppHost service. azd reads the Aspire manifest and provisions the
-# Container Apps environment + the api/web container apps (manifest mode, GA).
+# Aspire AppHost service. Aspire 13.4 approach: `aspire publish` generates bicep,
+# then `az deployment` applies it. Platform resources (VNet, SQL, Front Door) are
+# deployed separately; Aspire references them via bicepparam.
 services:
   app:
     language: dotnet
     project: ./AspireBlueGreen.AppHost/AspireBlueGreen.AppHost.csproj
-    host: containerapp
 
 # NOTE: there is intentionally NO preprovision hook. Platform resources (VNet,
-# SQL, Front Door) are deployed explicitly by scripts/up.ps1 / preview.ps1 so
-# that `azd provision --preview` stays side-effect free.
+# SQL, Front Door) are deployed explicitly by scripts/up.ps1 / preview.ps1 BEFORE
+# aspire publish, so that subsequent `aspire publish` can reference them.
 hooks:
-  # Runs after `azd deploy` (and the deploy phase of `azd up`). It does NOT run
-  # during `azd provision --preview`, so previews never touch Front Door/traffic.
+  # Runs after the main deployment (triggered by scripts/deploy.ps1).
+  # Configures Front Door origin and validates traffic state.
   postdeploy:
     windows:
       shell: pwsh

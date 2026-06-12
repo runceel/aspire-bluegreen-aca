@@ -1,14 +1,14 @@
 # Aspire blue/green on Azure Container Apps
 
-`.NET 10 + Aspire` で構築した、**Azure Container Apps (ACA) 上で blue/green デプロイ**を実演するためのサンプルです。
-`Aspireデプロイ戦略まとめ.md` の方針（外部リソースは AsExisting、アプリは `PublishAsAzureContainerApp`、差分は `azd provision --preview`）をそのまま実装しています。
+`.NET 10 + Aspire 13.4` で構築した、**Azure Container Apps (ACA) 上で blue/green デプロイ**を実演するためのサンプルです。
+Aspire 13.4 で GA になった `aspire publish` / `aspire deploy` と Azure.Provisioning API を活用し、Aspire が IaC の主導権を持つ完全な実装です。
 
 - フロントエンド: **React (Vite)** — 本番は nginx コンテナで配信し `/api` を API へリバースプロキシ
 - バックエンド: **ASP.NET Core (.NET 10)** — `/api/version`（SQL 非依存）/ `/api/orders`（SQL）
-- デプロイ: **azd**（manifest モード = GA。`azd infra gen`/`aspire deploy` などの非 GA 機能は不使用）
-- 外部リソース: **VNet / Azure SQL / Front Door**（`platform/` の Bicep で作成し、AppHost は外部参照）
+- デプロイ: **Aspire 13.4 `aspire publish` + `az deployment`**（Azure.Provisioning API で IaC 生成）
+- 外部リソース: **VNet / Azure SQL / Front Door**（`platform/` の Bicep で管理、Aspire から参照）
 
-> **GA 機能のみ**: AppHost は `dotnet build` で実験的 API 診断（`ASPIRE*`）が 0 件になることを確認済みです。
+> **Aspire 13.4 GA 機能**: AppHost は Azure.Provisioning API で完全な IaC を生成し、`aspire publish` で bicep/bicepparam を出力。manifest mode（`azd up`）は使用していません。
 
 ## アーキテクチャ
 
@@ -54,19 +54,19 @@ flowchart TB
 
 > 図の凡例: 実線 = 本デモで作成するリソース・経路 / 点線 = 本番向けの推奨（本サンプルでは未デプロイ）。
 
-## 戦略まとめとの対応
+## 実装方針（Aspire 13.4）
 
-| リソース | 戦略まとめの分類 | 本サンプルの実装 |
-| --- | --- | --- |
-| ACA 環境 | `AddAzureContainerAppEnvironment`（GA） | AppHost。`ConfigureInfrastructure` で platform の VNet サブネットに統合 |
-| フロント/バック | `PublishAsAzureContainerApp`（GA） | 複数リビジョンモード（Multiple） |
-| SQL Database | `AsExisting`（GA） | `RunAsContainer()`（ローカル）+ `PublishAsExisting()`（Azure）。実体は `platform/` |
-| VNet | 純インフラ + 付随設定 | `platform/`。ACA 環境を `ConfigureInfrastructure` でサブネット統合 |
-| Front Door | 純インフラ（別デプロイ） | `platform/` で profile/endpoint/WAF/origin-group（空）。origin は postdeploy フックで配線 |
-| 適用前差分 | `azd provision --preview`（GA） | `scripts/preview.ps1`（承認ゲート） |
-| blue/green | 複数リビジョン + トラフィック分割 + ラベル（GA） | `scripts/bluegreen-*.ps1`（`az containerapp` ラッパー） |
+| コンポーネント | 実装方法 |
+| --- | --- |
+| ACA 環境 | AppHost → `aspire publish` → `az deployment` で作成。`ConfigureInfrastructure` で platform VNet サブネット統合 |
+| API / Web | `PublishAsAzureContainerApp()` で Azure.Provisioning API が bicep 生成。複数リビジョンモード + 宣言的 traffic 制御 |
+| SQL Database | `PublishAsExisting()` で既存 Azure SQL サーバーを参照。実体は `platform/` Bicep で作成 |
+| VNet | `platform/` Bicep で作成。AppHost は `ConfigureInfrastructure` で subnet ID を受け取り統合 |
+| Front Door | `platform/` Bicep で作成。origin 配線は postdeploy フック |
+| 差分確認 | `scripts/preview.ps1` → `aspire publish` + `az deployment --what-if` |
+| Blue/Green | 宣言的 traffic weights（App Host bicep） + 手動 promote/rollback スクリプト |
 
-blue/green の詳しい設計方針、宣言的 traffic と promote/rollback の状態遷移は [`docs/bluegreen-strategy.md`](docs/bluegreen-strategy.md) を参照してください。
+実装の詳細は [`AppHost.cs`](AspireBlueGreen.AppHost/AppHost.cs) の `ConfigureBlueGreen()` を参照。
 
 ## ディレクトリ構成
 
@@ -108,15 +108,32 @@ azd auth login
 azd env new prod                 # 環境を作成
 azd env set AZURE_LOCATION japaneast
 
-# 一式（platform → azd up → Front Door 配線 → トラフィック整備）
+# 一式（platform → aspire publish → az deployment → Front Door 配線）
 ./scripts/up.ps1
 ```
 
-`up.ps1` は初回のみ、未設定の値を補完してから、次を順に実行します。補完するのは `infra.parameters.appVersion`（初期値 `1.0.0`）/ `AZURE_RESOURCE_GROUP`（azd 既定の `rg-<env 名>`）/ `ACTIVE_LABEL`（`blue`）に加え、宣言的 blue/green 状態（`infra.parameters.productionLabel=blue` / `blueRevisionSuffix=v1-0-0` / `greenRevisionSuffix=`（空））です。`appVersion` は version の唯一の出所で、api の `APP_VERSION` env・web の Docker ビルド引数・各アプリの**リビジョンサフィックス**（`'v'` + バージョン、`.`→`-`）の導出に使われます。`infra.parameters.appVersion` からのみ解決されるため（AppHost で既定値なし公開）、未設定だと packaging が `parameter infra.parameters.appVersion not found` で失敗します。
+`up.ps1` は初回のみ、未設定の値を補完してから、次を順に実行します：
 
-1. `deploy-platform.ps1 -Apply` … VNet / Azure SQL / Front Door（空 origin）を `az deployment group` で作成し、AppHost の publish 入力は `azd env config set infra.parameters.*`、フック用の値は `azd env set` に保存
-2. `azd up` … manifest モードで ACA 環境 + api/web を provision → コンテナイメージを build/push → deploy。トラフィック配分（blue=100% / green=0%）はコンテナアプリ bicep が `productionLabel` から**宣言的**に設定
-3. **postdeploy フック**（`azure.yaml`）… `configure-frontdoor-origin.ps1`（Front Door origin/route = web FQDN）+ `reconcile-traffic.ps1`（宣言どおり本番=100% / candidate=0% かを**検証**）
+1. **Platform デプロイ** (`deploy-platform.ps1 -Apply`)
+   - VNet / Azure SQL / Front Door を Bicep で作成（`platform/main.bicep`）
+   - 出力（subnet ID、SQL server name など）を azd env に保存
+
+2. **Aspire 発行** (`aspire publish`)
+   - AppHost が Azure.Provisioning API で bicep/bicepparam を生成
+   - ACA 環境 + api/web + ロール割り当てなど
+
+3. **Azure にデプロイ** (`az deployment group create`)
+   - Aspire 生成の bicepparam に blue/green 状態を注入
+   - platform リソースを参照した Aspire bicep をデプロイ
+
+4. **Postdeploy フック**
+   - Front Door origin 配線（`configure-frontdoor-origin.ps1`）
+   - トラフィック検証（`reconcile-traffic.ps1`）
+
+パラメータ管理：
+- `infra.parameters.appVersion`：リリース版（api env / web build arg / revision suffix の出所）
+- `infra.parameters.productionLabel`：本番ラベル（`blue` or `green`）
+- `infra.parameters.blueRevisionSuffix` / `greenRevisionSuffix`：各色のリビジョンサフィックス
 
 完了後、`https://<Front Door エンドポイント>` で blue 版が表示されます。
 
@@ -164,37 +181,36 @@ azd env set AZURE_LOCATION japaneast
 
 | スクリプト | 役割 |
 | --- | --- |
-| `up.ps1` | E2E 一式（初期 blue/green パラメータの seed → platform → `azd up` → status） |
-| `preview.ps1` | 差分ゲート（platform what-if + `azd provision --preview`、副作用なし） |
-| `deploy-platform.ps1` | platform の `-WhatIf`/`-Apply`。出力を `azd env set` |
-| `bluegreen-deploy.ps1` | candidate（green）を 0% でデプロイ（`appVersion` + `<color>RevisionSuffix` 設定 → `azd deploy`） |
+| `up.ps1` | E2E 一式（blue/green パラメータの seed → platform → aspire publish → az deployment → postdeploy フック） |
+| `preview.ps1` | 差分ゲート（platform what-if + aspire publish + az deployment --what-if、副作用なし） |
+| `deploy-platform.ps1` | platform の `-WhatIf`/`-Apply`。出力を `azd env config` で保存 |
+| `bluegreen-deploy.ps1` | candidate（green）を 0% でデプロイ（`appVersion` 更新 → aspire publish → az deployment） |
 | `configure-frontdoor-origin.ps1` | postdeploy フック: Front Door の origin/route に web FQDN を設定 |
 | `reconcile-traffic.ps1` | postdeploy フック（検証専用）: 宣言どおり `本番=100% / candidate=0%` かを確認 |
 | `bluegreen-status.ps1` | web/api のリビジョン・ラベル・トラフィック・ラベル URL を表示 |
-| `bluegreen-promote.ps1` | candidate を本番へ（即時 `traffic set` + `productionLabel` 同期、`-CandidateWeight` でカナリア） |
-| `bluegreen-rollback.ps1` | 直前の本番ラベルへ即時ロールバック（`traffic set` + `productionLabel` 同期） |
+| `bluegreen-promote.ps1` | candidate を本番へ（即時 traffic set + aspire publish + az deployment で宣言的状態をロック、`-CandidateWeight` でカナリア） |
+| `bluegreen-rollback.ps1` | 直前の本番ラベルへロールバック（即時 traffic set + aspire publish + az deployment で宣言的状態をロック） |
 | `grant-sql-access.ps1` | （任意）API のマネージド ID に SQL アクセスを付与 |
 
 ## CI/CD 化の方法（パイプライン本体はスコープ外）
 
-すべての工程が `scripts/*.ps1` + `azd` で完結するため、同じコマンド列を CI から実行できます。
+すべての工程が `scripts/*.ps1` で完結するため、同じコマンド列を CI から実行できます。
 
 ```text
 # 例: パイプラインの 1 ジョブ
 azd auth login --client-id $AZURE_CLIENT_ID --federated-credential-provider github --tenant-id $AZURE_TENANT_ID   # OIDC
 azd env select prod                       # or azd env new + azd env set
 azd env set AZURE_SUBSCRIPTION_ID $AZURE_SUBSCRIPTION_ID  # azd は自動設定しないため明示
-azd env set AZURE_RESOURCE_GROUP rg-prod              # azd は自動設定しないため明示（既定命名 rg-<env 名>。up.ps1 を使わない場合は必須）
+azd env set AZURE_RESOURCE_GROUP rg-prod              # azd は自動設定しないため明示
 # 初期 blue/green パラメータ（up.ps1 を使わない CI では明示が必要）
-azd env config set infra.parameters.appVersion 1.0.0       # version の出所（api env / web ビルド引数 / リビジョンサフィックス）
+azd env config set infra.parameters.appVersion 1.0.0
 azd env config set infra.parameters.productionLabel blue
 azd env config set infra.parameters.blueRevisionSuffix v1-0-0
 azd env config set infra.parameters.greenRevisionSuffix ""
 pwsh ./scripts/preview.ps1                 # 差分の承認ゲート（手動承認ステップを挟む）
-pwsh ./scripts/deploy-platform.ps1 -Apply  # platform 適用
-azd provision                              # ACA インフラ
-azd deploy                                 # アプリ（postdeploy フックが Front Door 配線とトラフィック検証を実施）
-# 新バージョンのデプロイ（candidate を 0% で投入）→ 検証後に承認 →
+pwsh ./scripts/deploy-platform.ps1 -Apply  # platform 適用（Bicep）
+pwsh ./scripts/up.ps1                      # E2E（aspire publish → az deployment → postdeploy フック）
+# 新バージョンのデプロイ（candidate を 0% で投入）→ 検証後に승인 →
 pwsh ./scripts/bluegreen-deploy.ps1 -Version 1.1.0
 pwsh ./scripts/bluegreen-promote.ps1
 ```
@@ -205,7 +221,8 @@ pwsh ./scripts/bluegreen-promote.ps1
 ## 後片付け
 
 ```powershell
-azd down --purge --force
+# Aspire アプリとリソースグループを削除
+az group delete -n rg-prod --yes
 # platform リソースグループも削除
 az group delete -n rg-prod-platform --yes
 ```

@@ -11,9 +11,9 @@
                                                      the api APP_VERSION env + web build arg.
     2. Set infra.parameters.<candidate>RevisionSuffix to the same suffix so the candidate
        traffic entry references the revision this deploy creates.
-    3. azd deploy                                 -> builds web+api images and redeploys
-                                                     the Container App modules. The bicep
-                                                     pins production=100% / candidate=0%,
+    3. aspire publish                             -> generates bicep/bicepparam
+    4. az deployment                             -> applies the Aspire infrastructure.
+                                                     The bicep pins production=100% / candidate=0%,
                                                      so the new revision is parked safely.
   productionLabel is left unchanged here; promotion is the explicit, separate step
   (bluegreen-promote.ps1). web and api are deployed together so the tiers stay in lock-step.
@@ -40,8 +40,8 @@ if ($Version -eq $productionVersion) {
 }
 
 # Deterministic revision suffixes mean each version maps to exactly ONE revision
-# ('v' + version). If a revision with this suffix already exists, `azd deploy` would
-# fail mid-build with "revision with suffix <x> already exists". Fail fast (before the
+# ('v' + version). If a revision with this suffix already exists, `az deployment` would
+# fail mid-deploy with "revision with suffix <x> already exists". Fail fast (before the
 # image build) with actionable guidance instead.
 $appRg = Get-RequiredEnv -Env $envValues -Name 'AZURE_RESOURCE_GROUP'
 foreach ($name in (Get-TargetApps)) {
@@ -58,8 +58,42 @@ Write-Section "Deploying v$Version to candidate '$candidateLabel' (production '$
 # Declarative state for the candidate. appVersion drives the derived revision suffix for
 # BOTH apps and the api env / web build arg; the candidate's *RevisionSuffix param makes
 # the candidate traffic entry reference the revision this deploy creates.
+Write-Host "Setting appVersion=$Version"
 Set-AzdInfraParameter 'appVersion' $Version
+
+Write-Host "Setting ${candidateLabel}RevisionSuffix=$suffix"
 Set-AzdInfraParameter "${candidateLabel}RevisionSuffix" $suffix
+
+# Generate Aspire bicep/bicepparam
+Write-Section 'Running: aspire publish'
+$aspireOutput = './aspire-publish'
+Invoke-AspirePublish -OutputPath $aspireOutput -Force
+
+$bicepFile = Get-AspirePublishBicepFile $aspireOutput
+$bicepParamFile = Get-AspirePublishBicepParamFile $aspireOutput
+Write-Host "Generated bicep: $bicepFile"
+Write-Host "Generated bicepparam: $bicepParamFile"
+
+# Deploy Aspire infrastructure
+Write-Section 'Deploying Aspire infrastructure'
+$resourceGroup = Get-RequiredEnv -Env $envValues -Name 'AZURE_RESOURCE_GROUP'
+$deploymentName = "aspire-$(Get-Date -Format 'yyyyMMddHHmmss')"
+
+az deployment group create `
+    --resource-group $resourceGroup `
+    --template-file $bicepFile `
+    --parameters $bicepParamFile `
+    --name $deploymentName | Out-Null
+
+if ($LASTEXITCODE -ne 0) { throw 'az deployment failed.' }
+
+Write-Section 'Deployment complete'
+Write-Host "Candidate revision parked at 0% traffic: $candidateLabel"
+Write-Host "Production still at 100%: $productionLabel"
+Write-Host ""
+Write-Host "Next: Run './scripts/bluegreen-status.ps1' to see the candidate revision URLs"
+Write-Host "      or   './scripts/bluegreen-promote.ps1' to promote to production"
+
 
 Write-Host "appVersion              = $Version" -ForegroundColor DarkGray
 Write-Host "${candidateLabel}RevisionSuffix = $suffix  (candidate revision: <app>--$suffix, 0% traffic)" -ForegroundColor DarkGray

@@ -1,22 +1,18 @@
 <#
 .SYNOPSIS
   Promote the candidate color to production for BOTH apps (web + api): shift traffic
-  instantly, then sync the declarative state so the promotion survives the next deploy.
+  instantly and update the declarative production label.
 
 .DESCRIPTION
-  HYBRID model. Traffic is declarative (AppHost.cs ConfigureBlueGreen pins weights from
-  infra.parameters.productionLabel), but promotion uses an instant imperative traffic
-  switch for demo snappiness and then syncs the declarative param so a later `azd deploy`
-  stays consistent and never rolls the promotion back:
-    * `az containerapp ingress traffic set` -> immediate cutover (no rebuild/redeploy).
-    * On a full (100%) promote, flip infra.parameters.productionLabel = candidate so the
-      bicep now derives candidate=100% / old-production=0% on subsequent deploys.
-    * Mirror the azd env labels for status/rollback:
-        PREVIOUS_ACTIVE_LABEL = (old) production label
-        ACTIVE_LABEL          = candidate (new production)
+  Blue/green promotion is declarative (AppHost.cs ConfigureBlueGreen drives weights
+  from infra.parameters.productionLabel). A promote workflow:
+    1. `az containerapp ingress traffic set` -> immediate cutover (no rebuild).
+    2. `infra.parameters.productionLabel = candidate` -> update declarative state.
+    3. `aspire publish` -> regenerate bicep with new production label reflected.
+    4. `az deployment` -> apply the updated bicep, locking the promotion in place.
+  
   web and api are promoted together so the two tiers stay in lock-step. A canary (<100%)
-  does NOT flip productionLabel; finish with -CandidateWeight 100 (and avoid `azd deploy`
-  mid-canary, which would re-assert the declared production label).
+  does NOT flip productionLabel or redeploy; finish with -CandidateWeight 100.
 #>
 [CmdletBinding()]
 param(
@@ -49,6 +45,7 @@ foreach ($aspireName in Get-TargetApps) {
     $apps[$aspireName] = $appName
 }
 
+# Step 1: immediate traffic cutover
 foreach ($aspireName in Get-TargetApps) {
     $appName = $apps[$aspireName]
     az containerapp ingress traffic set -g $rg -n $appName `
@@ -57,13 +54,32 @@ foreach ($aspireName in Get-TargetApps) {
     Write-Host "[$aspireName] $candidateLabel=$CandidateWeight%  $productionLabel=$activeWeight%" -ForegroundColor Green
 }
 
+# Step 2: for full promotion (100%), update declarative state and redeploy to lock it in
 if ($CandidateWeight -eq 100) {
-    # Sync declarative state so a later `azd deploy` keeps the new production color.
+    Write-Section "Locking promotion in declarative state"
     Set-AzdInfraParameter 'productionLabel' $candidateLabel
     Set-AzdEnv 'PREVIOUS_ACTIVE_LABEL' $productionLabel
     Set-AzdEnv 'ACTIVE_LABEL' $candidateLabel
-    Write-Host "Promotion complete. Production label is now '$candidateLabel' (declarative + env synced)." -ForegroundColor Green
+    
+    # Regenerate Aspire bicep with new production label
+    Write-Section "Redeploying Aspire infrastructure to lock promotion"
+    $aspireOutput = './aspire-publish'
+    Invoke-AspirePublish -OutputPath $aspireOutput -Force
+    
+    $bicepFile = Get-AspirePublishBicepFile $aspireOutput
+    $bicepParamFile = Get-AspirePublishBicepParamFile $aspireOutput
+    
+    $deploymentName = "aspire-$(Get-Date -Format 'yyyyMMddHHmmss')"
+    az deployment group create `
+        --resource-group $rg `
+        --template-file $bicepFile `
+        --parameters $bicepParamFile `
+        --name $deploymentName 1>$null
+    
+    if ($LASTEXITCODE -ne 0) { throw 'az deployment failed.' }
+    
+    Write-Host "Promotion complete. Production label is now '$candidateLabel' (locked)." -ForegroundColor Green
 }
 else {
-    Write-Host "Canary at $CandidateWeight%. Re-run with -CandidateWeight 100 to finish promotion (do not 'azd deploy' mid-canary)." -ForegroundColor Yellow
+    Write-Host "Canary at $CandidateWeight%. Re-run with -CandidateWeight 100 to finish promotion." -ForegroundColor Yellow
 }

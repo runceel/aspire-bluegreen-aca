@@ -204,3 +204,49 @@ function Write-Section {
     Write-Host ''
     Write-Host "=== $Text ===" -ForegroundColor Cyan
 }
+
+# ---------------------------------------------------------------------------
+# Aspire publish/deploy helpers (Aspire 13.4 approach)
+# ---------------------------------------------------------------------------
+
+function Invoke-AspirePublish {
+    <# Generate bicep/bicepparam from AppHost via `aspire publish`. #>
+    param(
+        [string] $OutputPath = './aspire-publish',
+        [switch] $Force
+    )
+    Write-Section "Running: aspire publish"
+    
+    if ((Test-Path $OutputPath) -and -not $Force) {
+        Remove-Item $OutputPath -Recurse -Force | Out-Null
+    }
+    
+    $appHostPath = Resolve-Path './AspireBlueGreen.AppHost/AspireBlueGreen.AppHost.csproj'
+    & dotnet run --project $appHostPath -- publish --output-path $OutputPath
+    
+    if ($LASTEXITCODE -ne 0) {
+        throw "aspire publish failed (exit code $LASTEXITCODE)"
+    }
+}
+
+function Get-AspirePublishBicepFile {
+    <# Find the generated main bicep file from aspire publish output. #>
+    param([string] $OutputPath = './aspire-publish')
+    
+    $files = Get-ChildItem $OutputPath -Filter '*.bicep' -File
+    if ($files.Count -eq 0) {
+        throw "No .bicep file found in aspire publish output at '$OutputPath'."
+    }
+    return $files[0].FullName
+}
+
+function Get-AspirePublishBicepParamFile {
+    <# Find the generated bicepparam file from aspire publish output. #>
+    param([string] $OutputPath = './aspire-publish')
+    
+    $files = Get-ChildItem $OutputPath -Filter '*.bicepparam' -File
+    if ($files.Count -eq 0) {
+        throw "No .bicepparam file found in aspire publish output at '$OutputPath'."
+    }
+    return $files[0].FullName
+}
