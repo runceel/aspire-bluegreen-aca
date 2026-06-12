@@ -4,7 +4,7 @@
     <Project Path="src/Api/AspireBlueGreen.Api.csproj" />
   </Folder>
   <Folder Name="/src/web/">
-    <Project Path="src/web/web.njsproj" />
+    <Project Path="src/web/web.esproj" />
   </Folder>
   <Project Path="AspireBlueGreen.AppHost/AspireBlueGreen.AppHost.csproj" />
   <Project Path="AspireBlueGreen.ServiceDefaults/AspireBlueGreen.ServiceDefaults.csproj" />

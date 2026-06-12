@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.VisualStudio.JavaScript.SDK/0.6.20230">
+
+  <PropertyGroup>
+    <ProjectGuid>{AE6A29E2-5971-4553-96E6-EDDD5761F1C1}</ProjectGuid>
+    <ProjectHome />
+    <StartupFile>index.html</StartupFile>
+    <WorkingDirectory>.</WorkingDirectory>
+    <OutDir>dist\</OutDir>
+    <RootNamespace>web</RootNamespace>
+    <TypeScriptCompileBlocked>true</TypeScriptCompileBlocked>
+    <JavaScriptProjectType>Web</JavaScriptProjectType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="package.json" />
+    <Content Include="package-lock.json" />
+    <Content Include="index.html" />
+    <Content Include="vite.config.ts" />
+    <Content Include="tsconfig.json" />
+    <Content Include="Dockerfile" />
+    <Content Include=".dockerignore" />
+    <Content Include="nginx.conf.template" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="src\" />
+    <Folder Include="public\" />
+    <Folder Include="dist\" />
+    <Folder Include="docker-entrypoint.d\" />
+  </ItemGroup>
+
+</Project>
