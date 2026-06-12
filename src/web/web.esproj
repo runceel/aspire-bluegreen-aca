@@ -1,33 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Project Sdk="Microsoft.VisualStudio.JavaScript.SDK/0.6.20230">
-
+<Project Sdk="Microsoft.VisualStudio.JavaScript.Sdk/1.0.5776312">
   <PropertyGroup>
-    <ProjectGuid>{AE6A29E2-5971-4553-96E6-EDDD5761F1C1}</ProjectGuid>
-    <ProjectHome />
-    <StartupFile>index.html</StartupFile>
-    <WorkingDirectory>.</WorkingDirectory>
-    <OutDir>dist\</OutDir>
-    <RootNamespace>web</RootNamespace>
-    <TypeScriptCompileBlocked>true</TypeScriptCompileBlocked>
-    <JavaScriptProjectType>Web</JavaScriptProjectType>
+    <StartupCommand>npm run dev</StartupCommand>
+    <JavaScriptTestRoot>src\</JavaScriptTestRoot>
+    <JavaScriptTestFramework>Vitest</JavaScriptTestFramework>
+    <ShouldRunBuildScript>false</ShouldRunBuildScript>
+    <ShouldRunNpmAudit>false</ShouldRunNpmAudit>
+    <BuildOutputFolder>$(MSBuildProjectDirectory)\dist</BuildOutputFolder>
   </PropertyGroup>
-
-  <ItemGroup>
-    <Content Include="package.json" />
-    <Content Include="package-lock.json" />
-    <Content Include="index.html" />
-    <Content Include="vite.config.ts" />
-    <Content Include="tsconfig.json" />
-    <Content Include="Dockerfile" />
-    <Content Include=".dockerignore" />
-    <Content Include="nginx.conf.template" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Folder Include="src\" />
-    <Folder Include="public\" />
-    <Folder Include="dist\" />
-    <Folder Include="docker-entrypoint.d\" />
-  </ItemGroup>
-
 </Project>
