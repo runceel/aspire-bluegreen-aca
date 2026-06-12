@@ -3,6 +3,10 @@
   <Folder Name="/src/Api/">
     <Project Path="src/Api/AspireBlueGreen.Api.csproj" />
   </Folder>
+  <Folder Name="/src/web/">
+    <Folder Name="src/" />
+    <Folder Name="public/" />
+  </Folder>
   <Project Path="AspireBlueGreen.AppHost/AspireBlueGreen.AppHost.csproj" />
   <Project Path="AspireBlueGreen.ServiceDefaults/AspireBlueGreen.ServiceDefaults.csproj" />
 </Solution>
