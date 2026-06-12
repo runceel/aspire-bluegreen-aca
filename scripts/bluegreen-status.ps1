@@ -11,8 +11,7 @@ param()
 $envValues = Get-AzdEnvValues
 $rg = Get-RequiredEnv $envValues 'AZURE_RESOURCE_GROUP'
 
-$activeLabel = $envValues['ACTIVE_LABEL']
-if ([string]::IsNullOrWhiteSpace($activeLabel)) { $activeLabel = 'blue' }
+$activeLabel = Get-ProductionLabel -Env $envValues
 $candidateLabel = Get-CandidateLabel -ActiveLabel $activeLabel
 
 Write-Host ''

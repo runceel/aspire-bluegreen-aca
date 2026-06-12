@@ -118,6 +118,32 @@ function Get-CandidateLabel {
     return 'blue'
 }
 
+function ConvertTo-RevisionSuffix {
+    <#
+      Deterministic ACA revision suffix derived from a release version. MUST mirror
+      the bicep expression in AppHost.cs ConfigureBlueGreen:
+          revisionSuffix = 'v' + replace(appVersion, '.', '-')
+      e.g. 1.2.0 -> v1-2-0. Used so the declarative traffic block can reference the
+      revision a deploy creates by a predictable name.
+    #>
+    param([Parameter(Mandatory)] [string] $Version)
+    return 'v' + ($Version -replace '\.', '-')
+}
+
+function Get-ProductionLabel {
+    <#
+      Canonical production color. Source of truth is the DECLARATIVE
+      infra.parameters.productionLabel (drives the bicep ingress traffic weights).
+      ACTIVE_LABEL (azd env) mirrors it for status/promote/rollback readability.
+      Falls back to 'blue'.
+    #>
+    param([hashtable] $Env)
+    $label = Get-AzdInfraParameter 'productionLabel'
+    if ([string]::IsNullOrWhiteSpace($label) -and $Env) { $label = $Env['ACTIVE_LABEL'] }
+    if ([string]::IsNullOrWhiteSpace($label)) { $label = 'blue' }
+    return $label
+}
+
 function Set-RevisionLabel {
     <# (Re)assign a label to a revision, detaching it from any other revision first. #>
     param(
@@ -147,7 +173,7 @@ function Get-AzdInfraParameter {
 function Set-AzdInfraParameter {
     param(
         [Parameter(Mandatory)] [string] $Name,
-        [Parameter(Mandatory)] [string] $Value
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $Value
     )
 
     azd env config set "infra.parameters.$Name" $Value 1>$null

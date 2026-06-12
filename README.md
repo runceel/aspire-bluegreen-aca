@@ -109,11 +109,11 @@ azd env set AZURE_LOCATION japaneast
 ./scripts/up.ps1
 ```
 
-`up.ps1` は初回のみ、未設定の `infra.parameters.appVersion`（初期値 `1.0.0`）/ `AZURE_RESOURCE_GROUP`（azd 既定の `rg-<env 名>`）/ `ACTIVE_LABEL`（`blue`）を補完してから、次を順に実行します（`appVersion` は web のビルド引数で、非対話 `azd up --no-prompt` では `infra.parameters` からのみ解決されるため、未設定だと packaging が `parameter infra.parameters.appVersion not found` で失敗します）。
+`up.ps1` は初回のみ、未設定の値を補完してから、次を順に実行します。補完するのは `infra.parameters.appVersion`（初期値 `1.0.0`）/ `AZURE_RESOURCE_GROUP`（azd 既定の `rg-<env 名>`）/ `ACTIVE_LABEL`（`blue`）に加え、宣言的 blue/green 状態（`infra.parameters.productionLabel=blue` / `blueRevisionSuffix=v1-0-0` / `greenRevisionSuffix=`（空））です。`appVersion` は version の唯一の出所で、api の `APP_VERSION` env・web の Docker ビルド引数・各アプリの**リビジョンサフィックス**（`'v'` + バージョン、`.`→`-`）の導出に使われます。`infra.parameters.appVersion` からのみ解決されるため（AppHost で既定値なし公開）、未設定だと packaging が `parameter infra.parameters.appVersion not found` で失敗します。
 
 1. `deploy-platform.ps1 -Apply` … VNet / Azure SQL / Front Door（空 origin）を `az deployment group` で作成し、AppHost の publish 入力は `azd env config set infra.parameters.*`、フック用の値は `azd env set` に保存
-2. `azd up` … manifest モードで ACA 環境 + api/web を provision → コンテナイメージを build/push → deploy
-3. **postdeploy フック**（`azure.yaml`）… `configure-frontdoor-origin.ps1`（Front Door origin/route = web FQDN）+ `reconcile-traffic.ps1`（`ACTIVE_LABEL=100% / candidate=0%`）
+2. `azd up` … manifest モードで ACA 環境 + api/web を provision → コンテナイメージを build/push → deploy。トラフィック配分（blue=100% / green=0%）はコンテナアプリ bicep が `productionLabel` から**宣言的**に設定
+3. **postdeploy フック**（`azure.yaml`）… `configure-frontdoor-origin.ps1`（Front Door origin/route = web FQDN）+ `reconcile-traffic.ps1`（宣言どおり本番=100% / candidate=0% かを**検証**）
 
 完了後、`https://<Front Door エンドポイント>` で blue 版が表示されます。
 
@@ -130,12 +130,13 @@ azd env set AZURE_LOCATION japaneast
 
 1. コードを書き換えて新バージョンにする
    - `src/Api/Program.cs` の `Color` / `Label` を変更（例: 緑 `#16a34a` / `green`）
-   - 新バージョン番号を設定: `azd env config set infra.parameters.appVersion 1.1.0`（api の `APP_VERSION` env と web のビルド引数へ反映。ビルド引数は `infra.parameters` を参照するため `azd env set` ではなくこちらを使う）
 2. 新リビジョンをデプロイ（本番トラフィックは奪わない）
    ```powershell
-   azd deploy
+   ./scripts/bluegreen-deploy.ps1 -Version 1.1.0
    ```
-   postdeploy フックが新リビジョンを **candidate（このデモでは green）ラベル**に割り当て、`ACTIVE_LABEL=100% / candidate=0%` を維持します。
+   `appVersion` の更新 → candidate（green）の `greenRevisionSuffix` 設定 → `azd deploy` を一括実行します。コンテナアプリ bicep が `productionLabel=blue` から **green=0% / blue=100%** を宣言するため、新リビジョンは**常に 0% で作成**されます（デプロイ中も本番露出ゼロ）。`productionLabel` は変更しません。
+
+   > リビジョンサフィックスは `appVersion` から決定的に導出されるため、**デプロイのたびに新しいバージョンが必要**です（同一バージョンの再デプロイは `revision with suffix ... already exists` で失敗。`bluegreen-deploy.ps1` がビルド前に検知）。promote/rollback はトラフィックを動かすだけで再デプロイしないため影響を受けません。
 3. candidate を検証（本番に影響なし）
    ```powershell
    ./scripts/bluegreen-status.ps1   # 各アプリの candidate ラベル URL を表示
@@ -146,6 +147,7 @@ azd env set AZURE_LOCATION japaneast
    ./scripts/bluegreen-promote.ps1                    # 即時 100%
    ./scripts/bluegreen-promote.ps1 -CandidateWeight 20 # 段階的（カナリア）も可
    ```
+   完全昇格時は即時の `az ... traffic set` に加え、宣言的状態 `infra.parameters.productionLabel` も同期するため、以降の `azd deploy` でも昇格が維持されます。
 5. 問題があれば即時ロールバック
    ```powershell
    ./scripts/bluegreen-rollback.ps1
@@ -159,14 +161,15 @@ azd env set AZURE_LOCATION japaneast
 
 | スクリプト | 役割 |
 | --- | --- |
-| `up.ps1` | E2E 一式（platform → `azd up` → status） |
+| `up.ps1` | E2E 一式（初期 blue/green パラメータの seed → platform → `azd up` → status） |
 | `preview.ps1` | 差分ゲート（platform what-if + `azd provision --preview`、副作用なし） |
 | `deploy-platform.ps1` | platform の `-WhatIf`/`-Apply`。出力を `azd env set` |
+| `bluegreen-deploy.ps1` | candidate（green）を 0% でデプロイ（`appVersion` + `<color>RevisionSuffix` 設定 → `azd deploy`） |
 | `configure-frontdoor-origin.ps1` | postdeploy フック: Front Door の origin/route に web FQDN を設定 |
-| `reconcile-traffic.ps1` | postdeploy フック: `ACTIVE_LABEL=100% / candidate=0%` を保証 |
+| `reconcile-traffic.ps1` | postdeploy フック（検証専用）: 宣言どおり `本番=100% / candidate=0%` かを確認 |
 | `bluegreen-status.ps1` | web/api のリビジョン・ラベル・トラフィック・ラベル URL を表示 |
-| `bluegreen-promote.ps1` | candidate を本番へ（`-CandidateWeight` でカナリア） |
-| `bluegreen-rollback.ps1` | 直前の本番ラベルへ即時ロールバック |
+| `bluegreen-promote.ps1` | candidate を本番へ（即時 `traffic set` + `productionLabel` 同期、`-CandidateWeight` でカナリア） |
+| `bluegreen-rollback.ps1` | 直前の本番ラベルへ即時ロールバック（`traffic set` + `productionLabel` 同期） |
 | `grant-sql-access.ps1` | （任意）API のマネージド ID に SQL アクセスを付与 |
 
 ## CI/CD 化の方法（パイプライン本体はスコープ外）
@@ -177,13 +180,19 @@ azd env set AZURE_LOCATION japaneast
 # 例: パイプラインの 1 ジョブ
 azd auth login --client-id $AZURE_CLIENT_ID --federated-credential-provider github --tenant-id $AZURE_TENANT_ID   # OIDC
 azd env select prod                       # or azd env new + azd env set
+azd env set AZURE_SUBSCRIPTION_ID $AZURE_SUBSCRIPTION_ID  # azd は自動設定しないため明示
 azd env set AZURE_RESOURCE_GROUP rg-prod              # azd は自動設定しないため明示（既定命名 rg-<env 名>。up.ps1 を使わない場合は必須）
-azd env config set infra.parameters.appVersion 1.0.0  # web ビルド引数の解決に必要（バージョン更新時はこの値を変える）
+# 初期 blue/green パラメータ（up.ps1 を使わない CI では明示が必要）
+azd env config set infra.parameters.appVersion 1.0.0       # version の出所（api env / web ビルド引数 / リビジョンサフィックス）
+azd env config set infra.parameters.productionLabel blue
+azd env config set infra.parameters.blueRevisionSuffix v1-0-0
+azd env config set infra.parameters.greenRevisionSuffix ""
 pwsh ./scripts/preview.ps1                 # 差分の承認ゲート（手動承認ステップを挟む）
 pwsh ./scripts/deploy-platform.ps1 -Apply  # platform 適用
 azd provision                              # ACA インフラ
-azd deploy                                 # アプリ（postdeploy フックが Front Door とトラフィック設定を整備）
-# 検証後に承認 →
+azd deploy                                 # アプリ（postdeploy フックが Front Door 配線とトラフィック検証を実施）
+# 新バージョンのデプロイ（candidate を 0% で投入）→ 検証後に承認 →
+pwsh ./scripts/bluegreen-deploy.ps1 -Version 1.1.0
 pwsh ./scripts/bluegreen-promote.ps1
 ```
 

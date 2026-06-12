@@ -52,7 +52,7 @@ azd env set AZURE_SUBSCRIPTION_ID $(az account show --query id -o tsv)
 ./scripts/up.ps1
 ```
 
-> **`up.ps1` が自動で補完する値**: 初回のみ、未設定の `infra.parameters.appVersion`（初期値 `1.0.0`）/ `AZURE_RESOURCE_GROUP`（azd 既定の `rg-<env 名>`）/ `ACTIVE_LABEL`（`blue`）を補完してから `azd up` を実行します。`appVersion` は web の Docker **ビルド引数**に使われ、`azd up --no-prompt`（非対話）では `infra.parameters.appVersion` からしか解決できません（AppHost の既定値や `azd env set` の env 変数では解決されない）。このため補完されないと `parameter infra.parameters.appVersion not found` で失敗します。バージョンを上げるときはステップ 2 で `azd env config set infra.parameters.appVersion <x>` を実行します。
+> **`up.ps1` が自動で補完する値**: 初回のみ、未設定の値を補完してから `azd up` を実行します。`infra.parameters.appVersion`（初期値 `1.0.0`）/ `AZURE_RESOURCE_GROUP`（azd 既定の `rg-<env 名>`）/ `ACTIVE_LABEL`（`blue`）に加え、宣言的 blue/green 状態（`infra.parameters.productionLabel=blue` / `blueRevisionSuffix=v1-0-0` / `greenRevisionSuffix=`（空））を補完します。`appVersion` はバージョンの唯一の出所で、api の `APP_VERSION` env・web の Docker **ビルド引数**・各アプリの**リビジョンサフィックス**（`v` + バージョン、`.`→`-`）の導出に使われます。`infra.parameters.appVersion` からしか解決されない（AppHost の既定値や `azd env set` の env 変数では解決されない）ため、補完されないと `parameter infra.parameters.appVersion not found` で失敗します。バージョンを上げるときはステップ 3 の `bluegreen-deploy.ps1 -Version <x>` を使います。
 
 **期待結果**
 
@@ -82,16 +82,12 @@ const string Color = "#16a34a"; // green
 const string Label = "green";
 ```
 
-新バージョン番号を設定します（azd パラメータ `appVersion` → api の `APP_VERSION` env と web のビルド引数に反映）。web のビルド引数も `infra.parameters` を参照するため、`azd env config set` で設定します。
-
-```powershell
-azd env config set infra.parameters.appVersion 1.1.0
-```
+> バージョン番号（`1.1.0`）はステップ 3 の `bluegreen-deploy.ps1 -Version 1.1.0` で設定します（`infra.parameters.appVersion` に反映され、api の `APP_VERSION` env・web のビルド引数・リビジョンサフィックスの導出に使われます）。
 
 **期待結果 / 見せるポイント**
 
 - 差分は数行のみ。「**コードを変えるだけ**で新バージョンになる」ことを強調。
-- （任意）`./scripts/preview.ps1` を実行し、`azd provision --preview` が **インフラ差分なし**（アプリのイメージ更新のみ）を示すことで、安全な変更であることを確認できます。
+- （任意）`./scripts/preview.ps1` を実行し、`azd provision --preview` が **インフラ差分なし**（コンテナアプリはデプロイ層で更新されるため provision はスキップ）を示すことで、安全な変更であることを確認できます。
 
 ---
 
@@ -100,13 +96,18 @@ azd env config set infra.parameters.appVersion 1.1.0
 **コマンド**
 
 ```powershell
-azd deploy
+./scripts/bluegreen-deploy.ps1 -Version 1.1.0
 ```
+
+> このスクリプトは「`appVersion` の更新 → candidate（green）の `greenRevisionSuffix` 設定 → `azd deploy` → status 表示」を一括で行います。`productionLabel` は変更しません（昇格はステップ 5）。
+>
+> **バージョンは毎回新しくします**。リビジョンサフィックスは `appVersion` から決定的に導出されるため、同じバージョンを再デプロイすると `revision with suffix ... already exists` で失敗します（スクリプトはビルド前に検知して止めます）。
 
 **期待結果**
 
-- 新しいコンテナイメージが build/push され、web/api に**新リビジョン**が作成される。
-- postdeploy フックの `reconcile-traffic.ps1` が、新リビジョンを **green ラベル**に割り当て、トラフィックは **blue=100% / green=0%** を維持。
+- 新しいコンテナイメージが build/push され、web/api に**新リビジョン**（`<app>--v1-1-0`）が作成される。
+- トラフィックは **宣言的**。コンテナアプリの bicep が `productionLabel=blue` から重みを導出（`blue=100% / green=0%`）するため、`azd deploy` 自体が新（green）リビジョンを **0% に固定**したまま blue を 100% に保ちます。デプロイ後にトラフィックを後付けで調整する隙間はありません。
+- postdeploy フックの `reconcile-traffic.ps1` は **検証専用**で、宣言通り（production=100% / candidate=0%）かを確認するだけです（トラフィックは変更しません）。
 
 **見せるポイント**
 
@@ -115,7 +116,8 @@ azd deploy
 
 **想定 Q&A**
 
-- Q: なぜ green が 0% なの？ → A: `reconcile-traffic.ps1` が「`ACTIVE_LABEL`（=blue）=100%、candidate（=green）=0%」を**デプロイのたびに強制的に設定する**ためです。
+- Q: なぜ green が 0% なの？ → A: コンテナアプリの ingress traffic を **bicep で宣言**しており、`weight = (productionLabel == '<color>') ? 100 : 0` です。candidate は常に 0% で作成されるため、`azd deploy` の瞬間も本番露出はゼロです。
+- Q: `reconcile-traffic.ps1` は何をする？ → A: 以前はトラフィックを設定していましたが、宣言的になった今は**状態の検証のみ**です（不一致を警告）。
 
 ---
 
@@ -154,7 +156,7 @@ azd deploy
 
 **期待結果**
 
-- web/api ともに **green=100% / blue=0%**。`ACTIVE_LABEL` が `green` に更新される。
+- web/api ともに **green=100% / blue=0%**（即時の `az ... traffic set`）。昇格後、宣言的状態 `infra.parameters.productionLabel` が `green` に同期され、`ACTIVE_LABEL` も `green` に更新されます。これにより以降の `azd deploy` でも green が本番のまま維持されます。
 
 **見せるポイント**
 
@@ -177,7 +179,7 @@ azd deploy
 
 **期待結果 / 見せるポイント**
 
-- web/api ともに **blue=100%** に即時復帰。`ACTIVE_LABEL` が `blue` に戻る。
+- web/api ともに **blue=100%** に即時復帰。宣言的状態 `infra.parameters.productionLabel` と `ACTIVE_LABEL` が `blue` に戻る（以降の `azd deploy` でも blue が維持される）。
 - Front Door の URL を再読み込みすると **元の青いバナー**。「問題があっても 1 コマンドで即時復旧」を強調。
 
 **想定 Q&A**
@@ -205,4 +207,5 @@ az group delete -n rg-prod-platform --yes
 | Front Door URL が 404 / 502 | `./scripts/configure-frontdoor-origin.ps1` を再実行（origin 配線をやり直す） |
 | 切替後も古い版が見える | ブラウザ/Front Door のキャッシュ。時間を置くか別タブで確認。`bluegreen-status.ps1` で実トラフィックを確認 |
 | `/api/orders` が `in-memory` のまま | SQL ユーザー未付与。`./scripts/grant-sql-access.ps1` を実行（Entra 管理者で `az login` 済みであること） |
-| promote が「candidate なし」で失敗 | 先に `azd deploy` で新リビジョンを作成してから promote |
+| promote が「candidate なし」で失敗 | 先に `./scripts/bluegreen-deploy.ps1 -Version <x>` で candidate リビジョンを作成してから promote |
+| `revision with suffix vX-Y-Z already exists` でデプロイ失敗 | リビジョンサフィックスは `appVersion` から決定的に導出されるため、**同じバージョンは 1 回しかデプロイできません**。`-Version` を未使用の新しい番号に上げてください（`bluegreen-deploy.ps1` はビルド前にこれを検知して早期に止めます）。promote/rollback はトラフィックを動かすだけ（再デプロイしない）なので影響を受けません。 |

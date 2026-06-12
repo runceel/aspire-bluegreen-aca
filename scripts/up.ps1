@@ -49,13 +49,28 @@ if ([string]::IsNullOrWhiteSpace($envValues['ACTIVE_LABEL'])) {
     Set-AzdEnv 'ACTIVE_LABEL' 'blue'
 }
 
-# appVersion is consumed as the web Docker BUILD ARG. Under `azd up --no-prompt` azd
-# resolves build-arg parameter references from infra.parameters.appVersion (NOT env
-# vars, NOT the manifest's published default), so it must exist or packaging fails
-# with "parameter infra.parameters.appVersion not found". Seed the initial demo
-# version; bump later with: azd env config set infra.parameters.appVersion <x>
+# appVersion is the single source of truth for the release version: it feeds the api
+# container env (APP_VERSION), the web Docker BUILD ARG, AND each app's derived revision
+# suffix ('v' + appVersion, dots -> dashes). It is published WITHOUT a default, so azd
+# resolves it from infra.parameters.appVersion (config) and `azd up --no-prompt` fails with
+# "parameter infra.parameters.appVersion not found" if it is missing. Seed the initial demo
+# version; bump later with scripts/bluegreen-deploy.ps1 (or `azd env config set
+# infra.parameters.appVersion <x>`).
 if ([string]::IsNullOrWhiteSpace((Get-AzdInfraParameter 'appVersion'))) {
     Set-AzdInfraParameter 'appVersion' '1.0.0'
+}
+
+# Declarative blue/green state, consumed by the api/web Container App bicep (see
+# AppHost.cs ConfigureBlueGreen). Traffic weights are derived from productionLabel, and
+# each color's revision is referenced by '<app>--<suffix>'. On the FIRST deploy production
+# is blue carrying the seeded appVersion and there is no green yet (empty suffix => the
+# green traffic entry is omitted). These are seeded only when productionLabel is unset so
+# re-running up.ps1 never clobbers a promoted/rolled-back state.
+if ([string]::IsNullOrWhiteSpace((Get-AzdInfraParameter 'productionLabel'))) {
+    $seedVersion = Get-AzdInfraParameter 'appVersion'
+    Set-AzdInfraParameter 'productionLabel' 'blue'
+    Set-AzdInfraParameter 'blueRevisionSuffix' (ConvertTo-RevisionSuffix $seedVersion)
+    Set-AzdInfraParameter 'greenRevisionSuffix' ''
 }
 
 # azd (1.25.x) does not write AZURE_RESOURCE_GROUP for this subscription-scoped Aspire

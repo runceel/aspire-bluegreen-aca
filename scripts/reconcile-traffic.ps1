@@ -1,15 +1,19 @@
 <#
 .SYNOPSIS
-  Postdeploy hook: enforce the desired blue/green traffic state after a deploy so
-  that a deploy never steals production traffic.
+  Postdeploy hook: VERIFY (do not mutate) the blue/green traffic state after a deploy.
 
 .DESCRIPTION
-  ACTIVE_LABEL (azd env, default "blue") is the production label. The other label
-  is the "candidate". For each app (web + api):
-    * First ever deploy  -> latest revision gets ACTIVE_LABEL and 100% traffic.
-    * A new revision      -> it becomes the candidate (0% traffic); ACTIVE stays 100%.
-    * No new revision      -> just reassert ACTIVE_LABEL = 100%.
-  Promotion/rollback are explicit, separate operations (bluegreen-*.ps1).
+  Traffic is now DECLARATIVE. The api/web Container App bicep (AppHost.cs
+  ConfigureBlueGreen) pins each color's ingress weight from
+  infra.parameters.productionLabel:
+      weight = (productionLabel == '<color>') ? 100 : 0
+  so `azd deploy` itself parks the freshly built (candidate) revision at 0% and keeps
+  production at 100% -- there is no post-deploy window where a new build can steal
+  production traffic. Promotion/rollback are explicit (bluegreen-*.ps1).
+
+  This hook therefore NO LONGER sets traffic. It only reports the live state and warns
+  if it diverges from the declared production label (which would indicate a manual/portal
+  edit, or a deploy that did not apply the expected parameters).
 #>
 [CmdletBinding()]
 param()
@@ -19,54 +23,37 @@ param()
 $envValues = Get-AzdEnvValues
 $rg = Get-RequiredEnv $envValues 'AZURE_RESOURCE_GROUP'
 
-$activeLabel = $envValues['ACTIVE_LABEL']
-if ([string]::IsNullOrWhiteSpace($activeLabel)) {
-    $activeLabel = 'blue'
-    Set-AzdEnv 'ACTIVE_LABEL' $activeLabel
-}
-$candidateLabel = Get-CandidateLabel -ActiveLabel $activeLabel
+$productionLabel = Get-ProductionLabel -Env $envValues
+$candidateLabel = Get-CandidateLabel -ActiveLabel $productionLabel
 
-Write-Section "Reconciling traffic (production label = $activeLabel)"
+Write-Section "Verifying declarative traffic (production label = $productionLabel)"
 
-function Set-Traffic {
-    param(
-        [string] $ResourceGroup,
-        [string] $AppName,
-        [string[]] $Weights
-    )
-    az containerapp ingress traffic set -g $ResourceGroup -n $AppName `
-        --label-weight @Weights 1>$null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to set traffic on $AppName." }
-}
-
+$mismatch = $false
 foreach ($aspireName in Get-TargetApps) {
     $appName = Resolve-ContainerAppName -ResourceGroup $rg -AspireName $aspireName
-    $latestRev = Get-LatestRevisionName -ResourceGroup $rg -AppName $appName
-    $activeRev = Get-RevisionForLabel -ResourceGroup $rg -AppName $appName -Label $activeLabel
+    $traffic = az containerapp ingress traffic show -g $rg -n $appName `
+        --query "[].{label:label, weight:weight, revision:revisionName}" -o json 2>$null | ConvertFrom-Json
 
-    if ([string]::IsNullOrWhiteSpace($activeRev)) {
-        # First deploy: latest becomes production.
-        Set-RevisionLabel -ResourceGroup $rg -AppName $appName -Label $activeLabel -Revision $latestRev
-        Set-Traffic -ResourceGroup $rg -AppName $appName -Weights @("$activeLabel=100")
-        Write-Host "[$aspireName] $activeLabel -> $latestRev (100%)" -ForegroundColor Green
-    }
-    elseif ($latestRev -ne $activeRev) {
-        # New revision deployed: park it on the candidate label with 0% traffic.
-        Set-RevisionLabel -ResourceGroup $rg -AppName $appName -Label $candidateLabel -Revision $latestRev
-        Set-Traffic -ResourceGroup $rg -AppName $appName -Weights @("$activeLabel=100", "$candidateLabel=0")
-        Write-Host "[$aspireName] $activeLabel=100% (kept)  |  $candidateLabel -> $latestRev (0%)" -ForegroundColor Green
+    $prodWeight = ($traffic | Where-Object { $_.label -eq $productionLabel } | Select-Object -First 1).weight
+    $candWeight = ($traffic | Where-Object { $_.label -eq $candidateLabel } | Select-Object -First 1).weight
+    if ($null -eq $prodWeight) { $prodWeight = 0 }
+    if ($null -eq $candWeight) { $candWeight = 0 }
+
+    if ([int]$prodWeight -eq 100 -and [int]$candWeight -eq 0) {
+        Write-Host "[$aspireName] OK  $productionLabel=100%  $candidateLabel=$candWeight%" -ForegroundColor Green
     }
     else {
-        # No new revision; just reassert production at 100%.
-        $candidateRev = Get-RevisionForLabel -ResourceGroup $rg -AppName $appName -Label $candidateLabel
-        if ([string]::IsNullOrWhiteSpace($candidateRev)) {
-            Set-Traffic -ResourceGroup $rg -AppName $appName -Weights @("$activeLabel=100")
-        }
-        else {
-            Set-Traffic -ResourceGroup $rg -AppName $appName -Weights @("$activeLabel=100", "$candidateLabel=0")
-        }
-        Write-Host "[$aspireName] no new revision; $activeLabel=100%" -ForegroundColor DarkGray
+        $mismatch = $true
+        Write-Host "[$aspireName] UNEXPECTED  $productionLabel=$prodWeight%  $candidateLabel=$candWeight% (expected production=100%, candidate=0%)" -ForegroundColor Yellow
     }
 }
 
-Write-Host 'Traffic reconciled.' -ForegroundColor Green
+if ($mismatch) {
+    Write-Host ''
+    Write-Host 'Traffic does not match the declared production label. Traffic is declarative;' -ForegroundColor Yellow
+    Write-Host 'do not edit it in the portal. To change production use bluegreen-promote.ps1 /' -ForegroundColor Yellow
+    Write-Host 'bluegreen-rollback.ps1, then re-deploy. Investigate before promoting.' -ForegroundColor Yellow
+}
+else {
+    Write-Host 'Traffic matches the declared production label.' -ForegroundColor Green
+}
