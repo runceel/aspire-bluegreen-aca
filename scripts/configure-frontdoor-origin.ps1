@@ -4,7 +4,7 @@
   Container App (origin + route). Idempotent.
 
 .DESCRIPTION
-  Front Door is created (profile/endpoint/origin-group/WAF) by platform/main.bicep
+  Front Door is created (profile/endpoint/origin-group/WAF) by infra/main.bicep
   with an EMPTY origin group, because the web FQDN does not exist until azd has
   deployed the container apps. This hook closes that gap after every deploy.
 #>

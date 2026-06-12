@@ -53,9 +53,9 @@ azd env set ACTIVE_LABEL blue                                   # status/promote
 
 ---
 
-## 2. 外部リソース（platform）を `az` コマンドで作成する
+## 2. 外部リソース（infra）を `az` コマンドで作成する
 
-`platform/main.bicep`（VNet / Azure SQL / Key Vault / Front Door）をリソースグループスコープで適用します。
+`infra/main.bicep`（VNet / Azure SQL / Key Vault / Front Door）をリソースグループスコープで適用します。
 **スクリプト版の `deploy-platform.ps1 -Apply` が裏でやっていること**そのものです。
 
 ```powershell
@@ -67,7 +67,7 @@ $me  = az ad signed-in-user show --query id -o tsv
 $upn = az ad signed-in-user show --query userPrincipalName -o tsv
 
 az deployment group create -g $platRg -n platform `
-  --template-file platform/main.bicep `
+  --template-file infra/main.bicep `
   --parameters location=japaneast namePrefix=abg environmentName=promanual `
     sqlAdminLogin=$upn sqlAdminObjectId=$me sqlAdminPrincipalType=User
 ```

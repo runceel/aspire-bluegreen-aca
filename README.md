@@ -6,7 +6,7 @@ Aspire 13.4 で GA になった `aspire publish` / `aspire deploy` と Azure.Pro
 - フロントエンド: **React (Vite)** — 本番は nginx コンテナで配信し `/api` を API へリバースプロキシ
 - バックエンド: **ASP.NET Core (.NET 10)** — `/api/version`（SQL 非依存）/ `/api/orders`（SQL）
 - デプロイ: **Aspire 13.4 `aspire publish` + `az deployment`**（Azure.Provisioning API で IaC 生成）
-- 外部リソース: **VNet / Azure SQL / Front Door**（`platform/` の Bicep で管理、Aspire から参照）
+- 外部リソース: **VNet / Azure SQL / Front Door**（`infra/` の Bicep で管理、Aspire から参照）
 
 > **Aspire 13.4 GA 機能**: AppHost は Azure.Provisioning API で完全な IaC を生成し、`aspire publish` で bicep/bicepparam を出力。manifest mode（`azd up`）は使用していません。
 
@@ -75,7 +75,7 @@ AspireBlueGreen.AppHost/        Aspire AppHost（ACA 環境 + api/web + SQL + VN
 AspireBlueGreen.ServiceDefaults/ Aspire ServiceDefaults
 src/Api/                        ASP.NET Core バックエンド
 src/web/                        React + Vite フロント（+ Dockerfile / nginx）
-platform/                       外部リソースの Bicep（VNet / SQL / Front Door / Key Vault）
+infra/                          外部リソースの Bicep（VNet / SQL / Front Door / Key Vault）
 scripts/                        azd ラッパー + blue/green スクリプト
 azure.yaml                      azd 設定 + postdeploy フック
 docs/bluegreen-strategy.md      blue/green 戦略・状態モデル・設計判断（日本語）
@@ -115,7 +115,7 @@ azd env set AZURE_LOCATION japaneast
 `up.ps1` は初回のみ、未設定の値を補完してから、次を順に実行します：
 
 1. **Platform デプロイ** (`deploy-platform.ps1 -Apply`)
-   - VNet / Azure SQL / Front Door を Bicep で作成（`platform/main.bicep`）
+   - VNet / Azure SQL / Front Door を Bicep で作成（`infra/main.bicep`）
    - 出力（subnet ID、SQL server name など）を azd env に保存
 
 2. **Aspire 発行** (`aspire publish`)

@@ -38,7 +38,7 @@ if (builder.ExecutionContext.IsPublishMode)
 // Azure Container Apps environment (VNet-integrated).
 //   - Local: not used (resources run as processes/containers).
 //   - Azure: created with full VNet integration, joined to the platform VNet
-//     subnet provisioned separately (via platform/main.bicep).
+//     subnet provisioned separately (via infra/main.bicep).
 // ---------------------------------------------------------------------------
 var acaEnv = builder.AddAzureContainerAppEnvironment("acaenv");
 
@@ -62,9 +62,9 @@ if (builder.ExecutionContext.IsPublishMode)
 }
 
 // ---------------------------------------------------------------------------
-// SQL Database (external resource created by platform/main.bicep).
+// SQL Database (external resource created by infra/main.bicep).
 //   - Local: a SQL Server container (no Azure required for `aspire run`).
-//   - Azure: an existing Azure SQL server created by platform/ Bicep.
+//   - Azure: an existing Azure SQL server created by infra/ Bicep.
 // The "orders" database is created by Aspire (AddDatabase) on top of the
 // existing server. /api/version never touches SQL, so the API must start
 // cleanly even before passwordless access is granted.

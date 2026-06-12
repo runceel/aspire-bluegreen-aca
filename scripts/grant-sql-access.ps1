@@ -11,7 +11,7 @@
 
   Prerequisites:
     * sqlcmd (go-sqlcmd, "sqlcmd" on PATH) installed
-    * You are signed in (az login) as the SQL Entra admin set by platform/
+    * You are signed in (az login) as the SQL Entra admin set by infra/
     * Your client IP is allowed (the demo enables "Allow Azure services"; for a
       local run also add a firewall rule for your IP).
 
